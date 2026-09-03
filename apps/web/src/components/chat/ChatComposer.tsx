@@ -141,6 +141,7 @@ import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommand
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
+import { MAX_QUEUED_PROMPTS } from "../../promptQueueStore";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
@@ -519,6 +520,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   hasSendableContent: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   showSendWhileRunning?: boolean;
+  onQueuePrompt?: (() => void) | undefined;
+  queueDisabledReason?: string | null | undefined;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
@@ -551,6 +554,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         hasSendableContent={props.hasSendableContent}
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
         showSendWhileRunning={props.showSendWhileRunning ?? false}
+        onQueuePrompt={props.onQueuePrompt}
+        queueDisabledReason={props.queueDisabledReason ?? null}
         onPreviousPendingQuestion={props.onPreviousPendingQuestion}
         onInterrupt={props.onInterrupt}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
@@ -698,6 +703,14 @@ export interface ChatComposerProps {
 
   // Callbacks
   onSend: (e?: { preventDefault: () => void }, intent?: ComposerSubmissionIntent) => void;
+  /**
+   * Queues the given prompt text to run as a fresh turn once the active turn
+   * finishes. Returns whether it was accepted (rejected when blank or the
+   * per-thread queue is full). Absent for surfaces that cannot queue (e.g.
+   * pre-thread drafts). See {@link ChatComposerProps.isPromptQueueFull}.
+   */
+  onQueuePrompt?: ((text: string) => { accepted: boolean; reason?: "empty" | "full" }) | undefined;
+  isPromptQueueFull?: boolean | undefined;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
   onRespondToApproval: (
@@ -789,6 +802,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerTerminalContextsRef,
     composerElementContextsRef,
     onSend,
+    onQueuePrompt,
+    isPromptQueueFull = false,
     onInterrupt,
     onImplementPlanInNewThread,
     onRespondToApproval,
@@ -2233,6 +2248,34 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       shouldBlurMobileComposerOnSubmit,
     ],
   );
+  /**
+   * Queues the current composer text to run as its own turn after the active
+   * one finishes, then clears the prompt. Distinct from steering (Enter / the
+   * running send button), which injects text into the running turn. Queued
+   * prompts are text-only; attachments and contexts stay in the composer.
+   */
+  const queueComposerPrompt = useCallback(() => {
+    if (!onQueuePrompt) return;
+    const text = promptRef.current;
+    if (text.trim().length === 0) return;
+    const outcome = onQueuePrompt(text);
+    if (!outcome.accepted) {
+      if (outcome.reason === "full") {
+        toastManager.add({
+          type: "info",
+          title: "Prompt queue is full",
+          description: `A thread can hold at most ${MAX_QUEUED_PROMPTS} queued prompts. Remove one before adding another.`,
+        });
+      }
+      return;
+    }
+    promptRef.current = "";
+    setComposerDraftPrompt(composerDraftTarget, "");
+    setComposerCursor(0);
+    setComposerTrigger(null);
+    setComposerHighlightedItemId(null);
+  }, [composerDraftTarget, onQueuePrompt, promptRef, setComposerDraftPrompt]);
+
   const compactThreadContext = useCallback(() => {
     if (
       compactDisabled ||
@@ -4286,6 +4329,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     hasSendableContent={composerSendState.hasSendableContent}
                     preserveComposerFocusOnPointerDown={isMobileViewport}
                     showSendWhileRunning={isMobileViewport}
+                    onQueuePrompt={onQueuePrompt ? queueComposerPrompt : undefined}
+                    queueDisabledReason={
+                      isPromptQueueFull ? `Queue is full (max ${MAX_QUEUED_PROMPTS})` : null
+                    }
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}
                     onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
