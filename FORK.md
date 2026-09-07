@@ -360,6 +360,17 @@ safe variable name. It also migrates invalid key values written by the earlier v
 Catalog failure retains cached or provider models and does not make an otherwise healthy provider
 unavailable.
 
+Turning a Claude instance's gateway off flushes the models it introduced. Because
+`claudeModelsFromSettings` always returns the complete built-in catalog synchronously, a
+`"disabled"` gateway snapshot is a full inventory, so it is stamped `modelsAuthoritative` alongside
+`"network"` and `"cache"`. Without that stamp the snapshot merge treated the built-in list as
+non-authoritative and retained the gateway's now-absent models (e.g. GPT slugs) as "missing from the
+refresh", leaving them stuck in the picker until the instance's cached snapshot was cleared. Only
+`"none"` (gateway enabled but not yet fetched, or a fetch that failed with no cache) stays
+non-authoritative so a transient failure keeps previously discovered gateway models. The parallel
+Codex path is intentionally unchanged: its inventory depends on an async CLI probe, so a disabled
+snapshot is not guaranteed complete.
+
 Models carry usable context, theoretical maximum context, maximum output, and metadata provenance.
 Every visible model accepts manual display, context, output, and reasoning overrides; manual values
 win over gateway and harness metadata. The Models information tooltip shows every known value
@@ -386,9 +397,11 @@ and `apps/web/src/components/settings/providerModelDetails.ts`.
 **Recorded validation:** focused gateway parsing and cache tests, Codex and Claude provider relay
 tests, settings and server contract tests, provider-settings component tests, `vp check`,
 `vp run typecheck`, and integrated web verification of gateway configuration, custom model metadata,
-and model-detail tooltips.
+and model-detail tooltips. The 2026-09-03 fix added a Claude "disabled gateway is authoritative"
+stamping test and a `mergeProviderSnapshot` regression proving a Claude instance drops its gateway
+(GPT) models once the gateway is turned off.
 
-**Last updated:** 2026-09-01
+**Last updated:** 2026-09-03
 
 ### DL027 — Remote editor links select the server account
 
@@ -417,9 +430,9 @@ and Electron shell tests.
 
 While a turn is running, the composer can queue follow-up prompts (up to 10 per
 thread) that each fire as their own fresh turn once the thread goes idle. This is
-distinct from steering, which is preserved: sending mid-turn (Enter / the
-running-send button) still injects text into the running turn, while the new
-"Queue" button holds a prompt to run after completion. The queue drains only into
+distinct from steering, which is preserved: while a turn runs, both the new
+"Queue" button and pressing Enter hold the prompt to run after completion, while
+the running-send button still steers text into the running turn. The queue drains only into
 a genuinely idle thread — it pauses on a running turn, a pending approval, a
 pending user-input request, a connecting/unavailable environment — so an
 auto-fired follow-up never buries blocked-on-you work. A failed dispatch restores

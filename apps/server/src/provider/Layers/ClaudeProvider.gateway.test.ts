@@ -180,4 +180,32 @@ it.layer(NodeServices.layer)("Claude gateway model metadata", (it) => {
       expect(pendingWithoutCatalog.modelsAuthoritative).toBeUndefined();
     }),
   );
+
+  // Regression: turning a gateway off must flush the models it introduced.
+  // A "disabled" catalog is the built-in inventory, so its snapshot is
+  // authoritative and the snapshot merge fully replaces the prior list
+  // instead of retaining the gateway's (e.g. GPT) models as "missing".
+  it.effect("marks a disabled gateway inventory as authoritative", () =>
+    Effect.gen(function* () {
+      // `enabled: false` keeps `checkClaudeProviderStatus` from spawning the
+      // Claude CLI; the stamping under test depends only on the catalog source.
+      const settings = decodeClaudeSettings({ enabled: false });
+      const catalog = { source: "disabled", models: [] } as const;
+
+      const pending = yield* makePendingClaudeProvider(settings, catalog);
+      const checked = yield* checkClaudeProviderStatus(
+        settings,
+        undefined,
+        undefined,
+        undefined,
+        catalog,
+      );
+
+      expect(pending.modelsAuthoritative).toBe(true);
+      expect(checked.modelsAuthoritative).toBe(true);
+      // The built-in catalog is present and free of any gateway-injected slugs.
+      expect(pending.models.every((model) => model.slug.startsWith("claude-"))).toBe(true);
+      expect(pending.models.some((model) => model.slug === "claude-opus-5")).toBe(true);
+    }),
+  );
 });

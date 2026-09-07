@@ -394,7 +394,21 @@ function stampClaudeCatalogAuthority(
   provider: ServerProviderDraft,
   catalog: GatewayCatalogSnapshot | undefined,
 ): ServerProviderDraft {
-  return catalog?.source === "network" || catalog?.source === "cache"
+  // A Claude inventory is authoritative whenever we know the full model list:
+  // a fetched gateway catalog ("network"/"cache"), or a "disabled" gateway
+  // where the list is exactly the built-in catalog. `claudeModelsFromSettings`
+  // always returns the complete built-in set synchronously, so a disabled
+  // snapshot is never partial. Stamping it authoritative lets the snapshot
+  // merge fully replace a stale list — e.g. dropping the gateway's models
+  // (GPT and friends) the moment the gateway is turned off, instead of the
+  // merge retaining them as "models missing from the new list".
+  //
+  // "none" (gateway enabled but not yet fetched, or a fetch that failed with
+  // no cache) is deliberately left non-authoritative so a transient failure
+  // keeps the previously discovered gateway models instead of flushing them.
+  return catalog?.source === "network" ||
+    catalog?.source === "cache" ||
+    catalog?.source === "disabled"
     ? { ...provider, modelsAuthoritative: true }
     : provider;
 }
