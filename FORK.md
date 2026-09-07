@@ -352,6 +352,17 @@ unavailable.
 
 Gateway and manual metadata compose with upstream's custom-model display-name and option-descriptor editor.
 
+Turning a Claude instance's gateway off flushes the models it introduced. Because
+`claudeModelsFromSettings` always returns the complete built-in catalog synchronously, a
+`"disabled"` gateway snapshot is a full inventory, so it is stamped `modelsAuthoritative` alongside
+`"network"` and `"cache"`. Without that stamp the snapshot merge treated the built-in list as
+non-authoritative and retained the gateway's now-absent models (e.g. GPT slugs) as "missing from the
+refresh", leaving them stuck in the picker until the instance's cached snapshot was cleared. Only
+`"none"` (gateway enabled but not yet fetched, or a fetch that failed with no cache) stays
+non-authoritative so a transient failure keeps previously discovered gateway models. The parallel
+Codex path is intentionally unchanged: its inventory depends on an async CLI probe, so a disabled
+snapshot is not guaranteed complete.
+
 Models carry usable context, theoretical maximum context, maximum output, and metadata provenance.
 Every visible model accepts manual display, context, output, and reasoning overrides; manual values
 win over gateway and harness metadata. The Models information tooltip shows every known value
@@ -383,9 +394,11 @@ and `apps/web/src/components/settings/providerModelDetails.ts`.
 tests, settings and server contract tests, provider-settings component tests, `vp check`,
 `vp run typecheck`, and integrated web verification of gateway configuration, custom model metadata,
 and model-detail tooltips. The 2026-09-03 add-instance dialog scroll fix was verified in a browser at
-1000x720 and 390x700 with the gateway section expanded.
+1000x720 and 390x700 with the gateway section expanded. The 2026-09-03 fix also added a Claude
+"disabled gateway is authoritative" stamping test and a `mergeProviderSnapshot` regression proving a
+Claude instance drops its gateway (GPT) models once the gateway is turned off.
 
-**Last updated:** 2026-09-05
+**Last updated:** 2026-09-07
 
 ### DL027 — Remote editor links select the server account
 
@@ -550,11 +563,58 @@ settings-contract, and server-settings tests.
 
 **Last updated:** 2026-09-03
 
+### DL033 — Client-side prompt queue for sequential follow-up turns
+
+While a turn is running, the composer can queue follow-up prompts (up to 10 per
+thread) that each fire as their own fresh turn once the thread goes idle. This is
+distinct from steering, which is preserved: while a turn runs, both the new
+"Queue" button and pressing Enter hold the prompt to run after completion, while
+the running-send button still steers text into the running turn. The queue drains only into
+a genuinely idle thread — it pauses on a running turn, a pending approval, a
+pending user-input request, a connecting/unavailable environment — so an
+auto-fired follow-up never buries blocked-on-you work. A failed dispatch restores
+the prompt to the head of the queue and pauses auto-dispatch on it to avoid a hot
+retry loop.
+
+The queue is client-side and persisted per device (localStorage), keyed by the
+thread's scoped ref, so it survives reload but does not sync across devices or run
+while the app is closed. It drains for the thread currently open in the chat view.
+Queued prompts are text-only in this revision (attachments and composer contexts
+stay in the composer). The pure queueing rules and the idle-dispatch decision live
+in `client-runtime` so a future mobile surface can reuse them; mobile is a
+deliberate follow-up because it already ships a separate durable thread-outbox with
+its own delivery semantics.
+
+**Implementation evidence:** `packages/client-runtime/src/state/promptQueue.ts`
+(+ test), `apps/web/src/promptQueueStore.ts` (+ test),
+`apps/web/src/components/chat/PromptQueueList.tsx`,
+`apps/web/src/components/chat/ComposerPrimaryActions.tsx`,
+`apps/web/src/components/chat/ChatComposer.tsx`, and
+`apps/web/src/components/ChatView.tsx`.
+
+**Recorded validation:** focused queue-core and web-store unit tests; repo-wide
+`vp check` and `vp run typecheck`.
+
+**Last updated:** 2026-09-07
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
 
 Don't forget to update the `base` tag after each merge to track the latest shared base with upstream/main.
+
+### 2026-09-07 — Merge feat/composer-prompt-queue into main
+
+**Merge commit:** this merge commit
+**Parents:** `b0c03c3c354a5764e32dc30779e4a6a752a1895f` (main, synced with upstream through `2fb99a7a6`) and `2e9b28c2cb3db85fe6267cc57710edf5493c5eaa` (feat/composer-prompt-queue)
+
+Consolidated the fork's in-progress feature branch into main after fast-forwarding main to the pulled origin state. The branch carried the DL033 client-side prompt queue (with the follow-up refinement that Enter queues while a turn is running) and the DL026 Claude "disabled gateway is authoritative" fix.
+
+- Kept both sides where the branch and the newer main touched the same code. In `ProviderRegistry.test.ts` and `ChatComposer.tsx`, the branch's additions (`queueComposerPrompt`, the disabled-gateway regression test) sat next to unrelated new main code (`submitCitationAndSend`, the "drops custom models" test); both were preserved as independent members.
+- In `ChatView.tsx`, took main's newer `isWorking` (extended with `isCompacting`) and its compaction-tracking block, and layered the branch's prompt-queue state on top, discarding the branch's stale `isWorking` duplicate.
+- Renumbered the branch's prompt-queue Divergence Log entry from DL028 to DL033 because main had since claimed DL028–DL032 (isolated Windows/macOS releases, sidebar promotion, management keys, auto-resume). Merged the DL026 gateway notes and validation records from both sides.
+- Dropped the branch's duplicate PR-filter and `cli-external-packages` `Set`-lookup edits in favor of the byte-identical versions main already carried.
+- Verification and the resulting 0.0.38 release build are recorded below / in the release artifacts.
 
 ### 2026-09-05 — Merge upstream/main into main
 

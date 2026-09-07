@@ -815,6 +815,46 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         ]);
       });
 
+      it("drops gateway models from Claude once its gateway is disabled", () => {
+        // A Claude instance whose Compatible API gateway was enabled had the
+        // gateway's OpenAI-format models merged into its authoritative
+        // inventory. Turning the gateway off produces a "disabled" snapshot
+        // that is likewise authoritative (the built-in catalog), so the merge
+        // must fully replace the list and drop the GPT models rather than
+        // retaining them as "missing from the refresh".
+        const previousProvider = {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          driver: ProviderDriverKind.make("claudeAgent"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-09-03T00:00:00.000Z",
+          version: "2.1.258",
+          modelsAuthoritative: true,
+          models: [
+            { slug: "claude-opus-5", name: "Claude Opus 5", isCustom: false, capabilities: null },
+            { slug: "gpt-5.6-sol", name: "GPT 5.6 Sol", isCustom: true, capabilities: null },
+            { slug: "gpt-5.6-luna", name: "GPT 5.6 Luna", isCustom: true, capabilities: null },
+          ],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const refreshedProvider = {
+          ...previousProvider,
+          checkedAt: "2026-09-03T00:01:00.000Z",
+          modelsAuthoritative: true,
+          models: [
+            { slug: "claude-opus-5", name: "Claude Opus 5", isCustom: false, capabilities: null },
+          ],
+        } satisfies ServerProvider;
+
+        assert.deepStrictEqual(
+          mergeProviderSnapshot(previousProvider, refreshedProvider).models,
+          refreshedProvider.models,
+        );
+      });
+
       it("drops stale OpenCode models missing from a successful refresh", () => {
         const previousProvider = {
           instanceId: ProviderInstanceId.make("opencode"),
