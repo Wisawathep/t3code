@@ -1,8 +1,8 @@
 import { ApiGatewaySettings } from "@t3tools/contracts";
+import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { codexLaunchArgv } from "../Layers/codexLaunchArgs.ts";
 import { syncCodexGatewayLaunchArgs, withCodexGatewayInventoryAuthority } from "./CodexDriver.ts";
 
 const decodeGatewaySettings = Schema.decodeSync(ApiGatewaySettings);
@@ -61,7 +61,7 @@ describe("Codex gateway launch arguments", () => {
       },
     });
 
-    expect(codexLaunchArgv(environment["T3CODE_CODEX_LAUNCH_ARGS"])).toContain(
+    expect(tokenizeCliArgs(environment["T3CODE_CODEX_LAUNCH_ARGS"])).toContain(
       'model_catalog_json="/tmp/current-codex-models.json"',
     );
 
@@ -100,6 +100,6 @@ describe("Codex gateway launch arguments", () => {
       },
     });
 
-    expect(environment["T3CODE_CODEX_LAUNCH_ARGS"]).not.toContain("model_catalog_json");
+    expect(environment["T3CODE_CODEX_LAUNCH_ARGS"] ?? "").not.toContain("model_catalog_json");
   });
 });

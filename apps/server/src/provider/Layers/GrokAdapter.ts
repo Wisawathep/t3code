@@ -2131,6 +2131,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         sessionModelSwitch: "in-session",
         conversationNavigation: "unsupported",
       },
+      compaction: { type: "slash-command", command: "/compact" },
       startSession,
       sendTurn,
       interruptTurn,

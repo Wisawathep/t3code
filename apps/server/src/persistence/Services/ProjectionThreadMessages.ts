@@ -53,6 +53,15 @@ export const GetProjectionThreadMessageInput = Schema.Struct({
 });
 export type GetProjectionThreadMessageInput = typeof GetProjectionThreadMessageInput.Type;
 
+export const HasProjectionThreadAssistantMessageInput = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  streamingOnly: Schema.Boolean,
+  subagentId: Schema.optional(TrimmedNonEmptyString),
+});
+export type HasProjectionThreadAssistantMessageInput =
+  typeof HasProjectionThreadAssistantMessageInput.Type;
+
 export const DeleteProjectionThreadMessagesInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -84,6 +93,13 @@ export interface ProjectionThreadMessageRepositoryShape {
   ) => Effect.Effect<Option.Option<ProjectionThreadMessage>, ProjectionRepositoryError>;
 
   /**
+   * Check for an assistant message in a turn without hydrating message text.
+   */
+  readonly hasAssistantMessageForTurn: (
+    input: HasProjectionThreadAssistantMessageInput,
+  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
+
+  /**
    * List projected thread messages for a thread.
    *
    * Returned in ascending creation order.
@@ -91,6 +107,11 @@ export interface ProjectionThreadMessageRepositoryShape {
   readonly listByThreadId: (
     input: ListProjectionThreadMessagesInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadMessage>, ProjectionRepositoryError>;
+
+  /** Read the latest user message needed to resume a completed turn. */
+  readonly getLatestUserMessage: (
+    input: ListProjectionThreadMessagesInput,
+  ) => Effect.Effect<Option.Option<ProjectionThreadMessage>, ProjectionRepositoryError>;
 
   /** Read the latest user-message timestamp without loading message bodies. */
   readonly getLatestUserMessageAt: (

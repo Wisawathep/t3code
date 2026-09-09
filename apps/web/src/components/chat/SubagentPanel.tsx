@@ -32,8 +32,7 @@ interface SubagentPanelProps {
   onOpenSubagent: (runIds: ReadonlyArray<string>) => void;
 }
 
-const EMPTY_TURN_DIFF_SUMMARIES = new Map<MessageId, TurnDiffSummary>();
-const EMPTY_REVERT_COUNTS = new Map<MessageId, number>();
+const EMPTY_TURN_DIFF_SUMMARIES: ReadonlyArray<TurnDiffSummary> = [];
 const doNothing = () => {};
 
 export function subagentPanelStatusLabel(status: SubagentPanelRunSummary["status"]): string {
@@ -123,11 +122,11 @@ export function SubagentPanel(props: SubagentPanelProps) {
         timelineEntries={timelineEntries}
         latestTurn={null}
         runningTurnId={null}
-        turnDiffSummaryByAssistantMessageId={EMPTY_TURN_DIFF_SUMMARIES}
+        turnDiffSummaries={EMPTY_TURN_DIFF_SUMMARIES}
         routeThreadKey={props.routeThreadKey}
         onOpenTurnDiff={doNothing}
-        revertTurnCountByUserMessageId={EMPTY_REVERT_COUNTS}
-        onRevertUserMessage={doNothing}
+        supportsConversationRollback={false}
+        onRevertToTurnCount={doNothing}
         isRevertingCheckpoint={false}
         onImageExpand={doNothing}
         activeThreadEnvironmentId={props.environmentId}

@@ -1357,6 +1357,34 @@ describe("CheckpointReactor", () => {
     );
   });
 
+  it("captures a checkpoint without a summary when the baseline is missing", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-turn-completed-no-baseline-summary"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: ThreadId.make("thread-1"),
+      turnId: asTurnId("turn-no-baseline-summary"),
+      payload: { state: "completed" },
+    });
+
+    await waitForEvent(harness.engine, (event) => event.type === "thread.turn-diff-completed");
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.checkpoints.length === 1,
+    );
+    expect(thread.checkpoints[0]).toMatchObject({
+      status: "ready",
+      checkpointTurnCount: 1,
+      files: [],
+    });
+    await waitForSidecarCheckpoint(harness.checkpointStore, harness.cwd, 1);
+    expect(
+      thread.activities.some((activity) => activity.kind === "checkpoint.capture.failed"),
+    ).toBe(false);
+  });
+
   it("captures pre-turn baseline from project workspace root when thread worktree is unset", async () => {
     const harness = await createHarness({
       hasSession: false,
