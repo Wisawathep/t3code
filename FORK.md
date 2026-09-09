@@ -601,6 +601,17 @@ its own delivery semantics.
 
 **Last updated:** 2026-09-07
 
+### DL034 — Model search within the selected group
+
+The shared web and desktop model picker searches only the selected provider instance or Favorites.
+An All providers group searches across available instances. The group rail stays visible during
+search, and switching groups preserves the query. Provider and continuation restrictions still apply.
+
+**Implementation evidence:** `apps/web/src/components/chat/ModelPickerContent.tsx`,
+`ModelPickerSidebar.tsx`, and `ModelPickerContent.test.ts`.
+
+**Last updated:** 2026-09-07
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
