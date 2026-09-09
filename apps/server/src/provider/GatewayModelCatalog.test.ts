@@ -168,6 +168,7 @@ describe("gateway model catalog merging", () => {
           reasoningEfforts: ["low", "high"],
           defaultReasoningEffort: "low",
         },
+        { slug: "gateway-only", name: "Gateway only" },
       ],
     };
     const merged = mergeGatewayModelCatalog({
@@ -204,12 +205,19 @@ describe("gateway model catalog merging", () => {
       emptyCustomCapabilities: { optionDescriptors: [] },
     });
 
-    expect(merged.map((model) => model.slug)).toEqual(["model-a", "manual-only"]);
+    expect(merged.map((model) => model.slug)).toEqual([
+      "model-a",
+      "gateway-only",
+      "not-routed",
+      "manual-only",
+    ]);
     expect(merged[0]?.name).toBe("Manual A");
     expect(merged[0]?.metadata).toEqual({
       contextWindowTokens: 300_000,
       source: "gateway",
     });
+    expect(merged[1]?.metadata).toEqual({ source: "gateway" });
+    expect(merged[2]?.metadata).toBeUndefined();
     expect(merged[0]?.capabilities?.optionDescriptors).toEqual([
       { id: "fastMode", label: "Fast Mode", type: "boolean" },
       {
@@ -225,7 +233,7 @@ describe("gateway model catalog merging", () => {
     ]);
   });
 
-  it("treats successful empty catalogs as authoritative", () => {
+  it("supplements built-ins with successful gateway catalogs", () => {
     const baseModels = [
       { slug: "built-in", name: "Built-in", isCustom: false, capabilities: null },
     ];
@@ -241,13 +249,13 @@ describe("gateway model catalog merging", () => {
         ...input,
         catalog: { source: "network", models: [] },
       }),
-    ).toEqual([]);
+    ).toEqual(baseModels);
     expect(
       mergeGatewayModelCatalog({
         ...input,
         catalog: { source: "cache", models: [] },
       }),
-    ).toEqual([]);
+    ).toEqual(baseModels);
     expect(
       mergeGatewayModelCatalog({
         ...input,

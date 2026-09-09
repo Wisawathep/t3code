@@ -350,6 +350,8 @@ Gateway settings respect the environment's read-only session controls.
 Catalog failure retains cached or provider models and does not make an otherwise healthy provider
 unavailable.
 
+A successfully fetched or cached gateway catalog supplements, rather than replaces, the provider's built-in models. Gateway rows take precedence for matching slugs, while unlisted built-ins remain visible without being misrepresented as discovered models. This keeps the default Claude/Codex inventory available alongside GPT and other models routed by a Proxy API.
+
 Gateway and manual metadata compose with upstream's custom-model display-name and option-descriptor editor.
 
 Turning a Claude instance's gateway off flushes the models it introduced. Because
@@ -396,7 +398,9 @@ tests, settings and server contract tests, provider-settings component tests, `v
 and model-detail tooltips. The 2026-09-03 add-instance dialog scroll fix was verified in a browser at
 1000x720 and 390x700 with the gateway section expanded. The 2026-09-03 fix also added a Claude
 "disabled gateway is authoritative" stamping test and a `mergeProviderSnapshot` regression proving a
-Claude instance drops its gateway (GPT) models once the gateway is turned off.
+Claude instance drops its gateway (GPT) models once the gateway is turned off. The 2026-09-07 catalog
+merge update verifies that successful Proxy catalogs retain unlisted built-ins while adding discovered
+models.
 
 **Last updated:** 2026-09-07
 

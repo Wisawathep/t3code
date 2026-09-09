@@ -453,6 +453,14 @@ export function mergeGatewayModelCatalog(input: {
     for (const model of input.baseModels) seen.add(model.slug);
   }
 
+  if (catalogIsAuthoritative) {
+    for (const model of input.baseModels) {
+      if (seen.has(model.slug)) continue;
+      models.push(model);
+      seen.add(model.slug);
+    }
+  }
+
   for (const entry of readCustomModelEntries(input.customModels)) {
     if (seen.has(entry.slug)) continue;
     const base = baseBySlug.get(entry.slug);

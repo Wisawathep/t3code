@@ -40,13 +40,14 @@ it.layer(NodeServices.layer)("Claude gateway model metadata", (it) => {
       ],
     });
 
-    expect(models).toHaveLength(1);
-    expect(models[0]?.name).toBe("Private Claude");
-    expect(models[0]?.metadata).toEqual({
+    const model = models.find((candidate) => candidate.slug === "claude-private");
+    expect(models.some((candidate) => candidate.slug === "claude-opus-5")).toBe(true);
+    expect(model?.name).toBe("Private Claude");
+    expect(model?.metadata).toEqual({
       contextWindowTokens: 300_000,
       source: "gateway",
     });
-    expect(models[0]?.capabilities?.optionDescriptors?.[0]).toMatchObject({
+    expect(model?.capabilities?.optionDescriptors?.[0]).toMatchObject({
       id: "effort",
       currentValue: "max",
       options: [
@@ -167,9 +168,9 @@ it.layer(NodeServices.layer)("Claude gateway model metadata", (it) => {
           catalog,
         );
 
-        expect(pending.models).toEqual([]);
+        expect(pending.models.some((model) => model.slug === "claude-opus-5")).toBe(true);
         expect(pending.modelsAuthoritative).toBe(true);
-        expect(checked.models).toEqual([]);
+        expect(checked.models.some((model) => model.slug === "claude-opus-5")).toBe(true);
         expect(checked.modelsAuthoritative).toBe(true);
       }
 

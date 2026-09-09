@@ -128,9 +128,9 @@ A failed refresh keeps the current snapshot and records a nonfatal catalog error
 exists, provider status uses harness or built-in models plus explicit custom models.
 
 `mergeGatewayModelCatalog` produces the provider snapshot. A successfully fetched or cached gateway
-catalog defines the available catalog list, including an empty list. Matching harness entries
-contribute capabilities that the gateway omitted, and explicit custom models are appended. Metadata
-precedence is manual model override, gateway catalog, harness or built-in value, then unknown.
+catalog supplements the built-in catalog, including when it is empty. Gateway metadata overrides
+matching harness entries, and explicit custom models are appended. Metadata precedence is manual
+model override, gateway catalog, harness or built-in value, then unknown.
 `contextWindowTokens` means the usable limit for this provider account.
 `maxContextWindowTokens` is the theoretical model maximum. The client shows both rather than
 treating a model's maximum as an account entitlement.
