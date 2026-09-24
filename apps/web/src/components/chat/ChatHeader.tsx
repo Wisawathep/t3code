@@ -1,6 +1,8 @@
 import {
   type EnvironmentId,
   type EditorId,
+  type MessageId,
+  type OrchestrationPinnedMessage,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
   type ServerProviderUsage,
@@ -12,7 +14,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, SearchIcon } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -26,6 +28,7 @@ import {
 import GitActionsControl from "../GitActionsControl";
 import { isTrailingDoubleClick } from "../Sidebar.logic";
 import { type DraftId } from "~/composerDraftStore";
+import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import ProjectScriptsControl, {
@@ -33,6 +36,7 @@ import ProjectScriptsControl, {
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
 import { OpenInPicker } from "./OpenInPicker";
+import { PinnedMessagesButton } from "./MessagePins";
 import { SubscriptionUsageRings } from "../SubscriptionUsage";
 import { useRemoteOpenState, type RemoteOpenMode } from "../../remoteOpen";
 import { usePrimaryEnvironmentId } from "../../state/environments";
@@ -41,6 +45,7 @@ import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
 import { readLocalApi } from "~/localApi";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { shortcutLabelForCommand } from "../../keybindings";
 import { observeResponsiveBreakpointFade, usePanelAnimationSettings } from "../../panelAnimations";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
@@ -66,6 +71,12 @@ interface ChatHeaderProps {
   rightPanelOpen: boolean;
   gitCwd: string | null;
   providerUsage: ServerProviderUsage | null;
+  /** Opens the find bar; omitted where there is nothing to search yet. */
+  onOpenFind?: (() => void) | undefined;
+  /** Pinned messages for the header list; omitted where the server cannot pin messages. */
+  pinnedMessages?: ReadonlyArray<OrchestrationPinnedMessage> | undefined;
+  onJumpToPinnedMessage?: ((messageId: MessageId) => void) | undefined;
+  onUnpinMessage?: ((messageId: MessageId) => void) | undefined;
   readonly onOpenPullRequest?: ((number: number) => void) | undefined;
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
@@ -136,6 +147,10 @@ export const ChatHeader = memo(function ChatHeader({
   rightPanelOpen,
   gitCwd,
   providerUsage,
+  onOpenFind,
+  pinnedMessages,
+  onJumpToPinnedMessage,
+  onUnpinMessage,
   onOpenPullRequest,
   onNewThreadInProject,
   onOpenProjectSettings,
@@ -160,6 +175,7 @@ export const ChatHeader = memo(function ChatHeader({
     });
   }, [panelAnimationDurationMs, panelAnimationsActive]);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const findShortcutLabel = shortcutLabelForCommand(keybindings, "thread.find");
   const activeProjectName = activeProject?.title;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const fileScripts = useT3ProjectFileScripts(
@@ -422,6 +438,36 @@ export const ChatHeader = memo(function ChatHeader({
           "[[data-panel-animations=true]_&]:motion-safe:transition-[padding-right] [[data-panel-animations=true]_&]:motion-safe:[transition-duration:var(--panel-animation-duration)] [[data-panel-animations=true]_&]:motion-safe:ease-out",
         )}
       >
+        {onOpenFind ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  aria-label="Find in thread"
+                  size="icon-xs"
+                  variant="ghost"
+                  className="text-muted-foreground hover:text-foreground"
+                  onClick={onOpenFind}
+                />
+              }
+            >
+              <SearchIcon aria-hidden className="size-3.5" />
+            </TooltipTrigger>
+            <TooltipPopup side="bottom">
+              Find in thread
+              {findShortcutLabel ? (
+                <span className="ms-2 text-muted-foreground">{findShortcutLabel}</span>
+              ) : null}
+            </TooltipPopup>
+          </Tooltip>
+        ) : null}
+        {pinnedMessages && onJumpToPinnedMessage && onUnpinMessage ? (
+          <PinnedMessagesButton
+            pins={pinnedMessages}
+            onJump={onJumpToPinnedMessage}
+            onUnpin={onUnpinMessage}
+          />
+        ) : null}
         <SubscriptionUsageRings usage={providerUsage} />
         {activeProjectScripts && (
           <ProjectScriptsControl

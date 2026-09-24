@@ -520,6 +520,39 @@ export const OrchestrationMessage = Schema.Struct({
 });
 export type OrchestrationMessage = typeof OrchestrationMessage.Type;
 
+/** Longest excerpt a message pin keeps from the pinned message's text. */
+export const PINNED_MESSAGE_EXCERPT_MAX_LENGTH = 240;
+/** Most messages one thread can keep pinned; each pin change carries the whole list. */
+export const MAX_PINNED_MESSAGES_PER_THREAD = 100;
+
+/**
+ * A message the user pinned in its thread. The excerpt is captured at pin time
+ * so the pinned list can show messages outside the loaded history window.
+ */
+export const OrchestrationPinnedMessage = Schema.Struct({
+  messageId: MessageId,
+  role: Schema.Literals(["user", "assistant"]),
+  excerpt: Schema.String,
+  messageCreatedAt: IsoDateTime,
+  pinnedAt: IsoDateTime,
+});
+export type OrchestrationPinnedMessage = typeof OrchestrationPinnedMessage.Type;
+
+/**
+ * Plain-text excerpt a message pin keeps: common Markdown markers dropped,
+ * whitespace collapsed, and trimmed to PINNED_MESSAGE_EXCERPT_MAX_LENGTH.
+ */
+export function pinnedMessageExcerpt(text: string): string {
+  const plain = text
+    .replace(/```[^\n]*/g, " ")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^[ \t]{0,3}(?:#{1,6}|>|[-*+]|\d+\.)[ \t]+/gm, "")
+    .replace(/\*\*|__|`/g, "");
+  const collapsed = plain.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= PINNED_MESSAGE_EXCERPT_MAX_LENGTH) return collapsed;
+  return `${collapsed.slice(0, PINNED_MESSAGE_EXCERPT_MAX_LENGTH - 1).trimEnd()}…`;
+}
+
 export const OrchestrationProposedPlanId = TrimmedNonEmptyString;
 export type OrchestrationProposedPlanId = typeof OrchestrationProposedPlanId.Type;
 
@@ -822,6 +855,9 @@ export const OrchestrationThread = Schema.Struct({
   // Pending-only state. Optional so older servers remain compatible.
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   deletedAt: Schema.NullOr(IsoDateTime),
+  // Pinned messages in pin order. Optional so payloads from pre-pin servers
+  // still decode.
+  pinnedMessages: Schema.optional(Schema.Array(OrchestrationPinnedMessage)),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -1187,6 +1223,25 @@ const ThreadUnpinCommand = Schema.Struct({
   threadId: ThreadId,
 });
 
+// Carries the message details the pin keeps: the command read model holds no
+// message bodies after a restart, so the server cannot look them up itself.
+const ThreadMessagePinCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.pin"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  role: OrchestrationPinnedMessage.fields.role,
+  excerpt: Schema.String,
+  messageCreatedAt: IsoDateTime,
+});
+
+const ThreadMessageUnpinCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.unpin"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+});
+
 const ThreadPinReorderCommand = Schema.Struct({
   type: Schema.Literal("thread.pin.reorder"),
   commandId: CommandId,
@@ -1437,6 +1492,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadPinCommand,
   ThreadUnpinCommand,
   ThreadPinReorderCommand,
+  ThreadMessagePinCommand,
+  ThreadMessageUnpinCommand,
   ThreadActiveReorderCommand,
   ThreadMetaUpdateCommand,
   ThreadPullRequestLinkCommand,
@@ -1473,6 +1530,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadPinCommand,
   ThreadUnpinCommand,
   ThreadPinReorderCommand,
+  ThreadMessagePinCommand,
+  ThreadMessageUnpinCommand,
   ThreadActiveReorderCommand,
   ThreadMetaUpdateCommand,
   ThreadPullRequestLinkCommand,
@@ -1862,6 +1921,10 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   // thread.pull-request-linked still decode and replay into the link table.
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
+  /** Full replacement for the thread's pinned messages. Message pins ride on
+      this existing event so older clients ignore the field instead of failing
+      to decode an unknown event type. */
+  pinnedMessages: Schema.optional(Schema.Array(OrchestrationPinnedMessage)),
   updatedAt: IsoDateTime,
 });
 

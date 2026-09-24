@@ -829,6 +829,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.branchPullRequest !== undefined
               ? { branchPullRequest: event.payload.branchPullRequest }
               : {}),
+            ...(event.payload.pinnedMessages !== undefined
+              ? { pinnedMessages: event.payload.pinnedMessages }
+              : {}),
             updatedAt: event.payload.updatedAt,
           });
           // Legacy single-link events replay into the link table. The old

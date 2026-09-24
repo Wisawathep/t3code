@@ -318,6 +318,35 @@ describe("applyThreadDetailEvent", () => {
       },
     );
 
+    it("replaces pinned messages and leaves other fields alone", () => {
+      const pin = {
+        messageId: MessageId.make("message-1"),
+        role: "assistant" as const,
+        excerpt: "Pinned answer",
+        messageCreatedAt: "2026-04-01T04:00:00.000Z",
+        pinnedAt: "2026-04-01T05:00:00.000Z",
+      };
+      const event = (pinnedMessages: ReadonlyArray<typeof pin>) =>
+        ({
+          ...baseEventFields,
+          sequence: 5,
+          occurredAt: "2026-04-01T05:00:00.000Z",
+          aggregateKind: "thread",
+          aggregateId: baseThread.id,
+          type: "thread.meta-updated",
+          payload: { threadId: baseThread.id, pinnedMessages, updatedAt: baseThread.updatedAt },
+        }) as const;
+      const pinned = applyThreadDetailEvent({ ...baseThread, activeOrderKey: "m" }, event([pin]));
+      if (pinned.kind !== "updated") throw new Error("expected an update");
+      expect(pinned.thread.pinnedMessages).toEqual([pin]);
+      expect(pinned.thread.activeOrderKey).toBe("m");
+      expect(pinned.thread.updatedAt).toBe(baseThread.updatedAt);
+
+      const unpinned = applyThreadDetailEvent(pinned.thread, event([]));
+      if (unpinned.kind !== "updated") throw new Error("expected an update");
+      expect(unpinned.thread.pinnedMessages).toEqual([]);
+    });
+
     it("patches title and branch", () => {
       const result = applyThreadDetailEvent(
         { ...baseThread, activeOrderKey: "m" },

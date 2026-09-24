@@ -675,6 +675,93 @@ checkout refused); `vp check`; and `vp run typecheck`.
 
 **Last updated:** 2026-09-24
 
+### DL037 — Find in thread
+
+A search button in the chat header, left of the session usage rings, opens a find bar over the
+timeline. The `thread.find` keybinding (default `mod+f` outside terminal and preview focus) opens it
+too, and pressing it again refocuses the bar. It matches user messages, assistant messages, and
+proposed plans without regard to case. Enter moves to the next match and Shift+Enter to the
+previous one, wrapping at both ends. Escape closes the bar. A new query starts at the newest match.
+After that, the selected match stays in place while later matches stream in.
+
+Matches come from the loaded timeline entries, so rows outside LegendList's rendered window still
+count. Turns not loaded yet ("Load earlier turns") are not searched. Selecting a match in a folded
+turn unfolds that turn. The list then scrolls the row into view and centers the exact range. The
+mounted rows get CSS custom highlights (`t3-thread-find`, `t3-thread-find-active`), so rendered
+DOM does not change. A MutationObserver on the list's scroll node repaints them as rows mount or
+stream. Mobile is not covered.
+
+**Implementation evidence:** `apps/web/src/components/chat/threadFind.logic.ts` (+ test),
+`apps/web/src/components/chat/ThreadFind.tsx`, `apps/web/src/components/chat/MessagesTimeline.tsx`,
+`apps/web/src/components/chat/ChatHeader.tsx`, `apps/web/src/components/ChatView.tsx`,
+`apps/web/src/index.css`, `packages/contracts/src/keybindings.ts`, and
+`packages/shared/src/keybindings.ts`.
+
+**Recorded validation:** focused find-logic tests; web, shared, and server keybinding tests; a
+web pass against a snapshot of real thread data (header button, `mod+f`, Thai query, Enter and
+Shift+Enter wrap, Escape clears highlights); `vp check`; and `vp run typecheck`.
+
+**Last updated:** 2026-09-24
+
+### DL038 — No T3 Connect sign-in button in the Settings sidebar
+
+The Settings sidebar footer no longer shows "Sign in to T3 Connect" to signed-out users. The
+account avatar still shows after sign-in. Users can still sign in from the Welcome wizard, and
+Connections settings still asks for sign-in where relay management needs it.
+
+**Implementation evidence:** `apps/web/src/components/settings/SettingsSidebarNav.tsx` and
+`apps/web/src/components/clerk/T3ConnectSidebarSignIn.tsx`.
+
+**Recorded validation:** targeted `vp check`; web typecheck; a web pass on the Settings page.
+
+**Last updated:** 2026-09-24
+
+### DL039 — Pinned messages in a thread
+
+User messages and assistant replies get a pin button to the right of Copy. A pin button in the chat
+header sits between Find and the session usage rings and shows the pin count. It opens a popover
+with the thread's pinned messages, newest pin first. Selecting one scrolls to the message and
+flashes it. The popover loads earlier turns and unfolds a folded turn when needed. Each entry also
+has an unpin button. Pins sync across clients and devices. Mobile has no pin UI yet. The shared
+client-runtime reducer already keeps the data.
+
+Pins live on the thread as `pinnedMessages`, a list of message id, role, a plain-text excerpt,
+message time, and pin time. The server stores them in `projection_threads.pinned_messages_json`
+(migration 063, idempotent so an upstream 063 cannot collide). The excerpt is captured at pin
+time, so the list can show messages outside the loaded history page. It is also why
+`thread.message.pin` carries role, excerpt, and message time from the client: the engine's command
+read model boots without message bodies, so the decider cannot look a message up after a restart.
+The decider still normalizes the excerpt through `pinnedMessageExcerpt` and caps a thread at
+`MAX_PINNED_MESSAGES_PER_THREAD` (100). Pin changes are emitted as `thread.meta-updated` with the
+full `pinnedMessages` list and the thread's existing `updatedAt`. Older clients already decode that
+event, so they ignore the new field, and the sidebar order does not change. `isThreadDetailEvent`
+forwards only the metadata updates that carry pins to thread subscribers. A pin whose message was
+removed by a revert stays listed; jumping to it shows a warning and it can be unpinned. The
+`threadMessagePinning` capability hides the UI on older servers.
+
+**Implementation evidence:** `packages/contracts/src/orchestration.ts` (+ test),
+`packages/contracts/src/environment.ts`, `apps/server/src/orchestration/decider.ts`
+(+ `decider.messagePins.test.ts`), `apps/server/src/orchestration/projector.ts`,
+`apps/server/src/orchestration/Layers/ProjectionPipeline.ts` (+ test),
+`apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts`,
+`apps/server/src/persistence/Migrations/063_ProjectionThreadsPinnedMessages.ts`,
+`apps/server/src/persistence/Layers/ProjectionThreads.ts`, `apps/server/src/ws.ts`
+(+ `ws-thread-detail.test.ts`), `packages/client-runtime/src/state/threadReducer.ts` (+ test),
+`packages/client-runtime/src/operations/commands.ts`,
+`packages/client-runtime/src/state/threadCommands.ts`,
+`apps/web/src/components/chat/MessagePins.tsx`,
+`apps/web/src/components/chat/useTimelineMessageJump.ts`,
+`apps/web/src/components/chat/MessagesTimeline.tsx`,
+`apps/web/src/components/chat/ChatHeader.tsx`, `apps/web/src/components/ChatView.tsx`, and
+`apps/web/src/index.css`.
+
+**Recorded validation:** decider, pipeline round-trip (thread detail and command read model),
+detail-event filter, reducer, and excerpt tests. A web pass against a snapshot of real thread data
+covered pinning user and assistant messages, the live count, persistence across reload, the
+popover list, jumping, and unpinning from the popover. `vp check` and `vp run typecheck` also ran.
+
+**Last updated:** 2026-09-24
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

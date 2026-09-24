@@ -43,6 +43,8 @@ export type UnsnoozeThreadInput = CommandInput<"thread.unsnooze">;
 export type PinThreadInput = CommandInput<"thread.pin">;
 export type UnpinThreadInput = CommandInput<"thread.unpin">;
 export type ReorderPinnedThreadInput = CommandInput<"thread.pin.reorder">;
+export type PinThreadMessageInput = CommandInput<"thread.message.pin">;
+export type UnpinThreadMessageInput = CommandInput<"thread.message.unpin">;
 export type ReorderActiveThreadInput = CommandInput<"thread.active.reorder">;
 export type UpdateThreadMetadataInput = CommandInput<"thread.meta.update">;
 export type LinkThreadPullRequestInput = CommandInput<"thread.pull-request.link">;
@@ -242,6 +244,26 @@ export const unpinThread: (input: UnpinThreadInput) => CommandEffect = Effect.fn
   return yield* dispatch({
     ...input,
     type: "thread.unpin",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const pinThreadMessage: (input: PinThreadMessageInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.pinThreadMessage",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "thread.message.pin",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const unpinThreadMessage: (input: UnpinThreadMessageInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.unpinThreadMessage",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "thread.message.unpin",
     commandId: yield* commandId(input),
   });
 });

@@ -1,6 +1,10 @@
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
-import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
+import {
+  pinnedMessageExcerpt,
+  type OrchestrationPinnedMessage,
+  type UsageLimitSourceSnapshots,
+} from "@t3tools/contracts";
 import {
   collectProviderUsageLimits,
   hasProviderUsageLimits,
@@ -359,6 +363,8 @@ import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
+import type { MessagePinState } from "./chat/MessagePins";
+import type { MessageJumpRequest } from "./chat/useTimelineMessageJump";
 import { SubagentPanel } from "./chat/SubagentPanel";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { resolveTimelineIsAtEnd } from "./chat/MessagesTimeline.logic";
@@ -525,6 +531,7 @@ const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_USAGE_LIMIT_SOURCES: UsageLimitSourceSnapshots = [];
+const EMPTY_PINNED_MESSAGES: ReadonlyArray<OrchestrationPinnedMessage> = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
@@ -2975,6 +2982,102 @@ function ChatViewContent(props: ChatViewProps) {
     hasComposerAttachments: composerHasAttachments,
   });
   const activePendingApproval = pendingApprovals[0] ?? null;
+  // The find bar belongs to the thread it was opened in. `request` changes on
+  // every open so a repeated shortcut refocuses the already-open bar.
+  const [threadFind, setThreadFind] = useState<{
+    readonly threadId: ThreadId;
+    readonly request: number;
+  } | null>(null);
+  const threadFindRequest =
+    threadFind !== null && threadFind.threadId === activeThreadId ? threadFind.request : null;
+  const openThreadFind = useCallback(() => {
+    if (!activeThreadId) return;
+    setThreadFind((current) => ({
+      threadId: activeThreadId,
+      request: (current?.request ?? 0) + 1,
+    }));
+  }, [activeThreadId]);
+  const closeThreadFind = useCallback(() => setThreadFind(null), []);
+
+  const supportsMessagePinning =
+    isServerThread && serverConfig?.environment.capabilities.threadMessagePinning === true;
+  const pinnedMessages = activeServerThread?.pinnedMessages ?? EMPTY_PINNED_MESSAGES;
+  const pinThreadMessage = useAtomCommand(threadEnvironment.pinMessage, { reportFailure: false });
+  const unpinThreadMessage = useAtomCommand(threadEnvironment.unpinMessage, {
+    reportFailure: false,
+  });
+  const reportPinFailure = useCallback(
+    (title: string) => (result: Awaited<ReturnType<typeof pinThreadMessage>>) => {
+      if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
+      const error = squashAtomCommandFailure(result);
+      toastManager.add({
+        type: "error",
+        title,
+        description: error instanceof Error ? error.message : "An error occurred.",
+      });
+    },
+    [],
+  );
+  const unpinMessage = useCallback(
+    (messageId: MessageId) => {
+      if (!activeThreadId || !activeThread) return;
+      void unpinThreadMessage({
+        environmentId: activeThread.environmentId,
+        input: { threadId: activeThreadId, messageId },
+      }).then(reportPinFailure("Failed to unpin message"));
+    },
+    [activeThread, activeThreadId, reportPinFailure, unpinThreadMessage],
+  );
+  const pinnedMessageIds = useMemo(
+    () => new Set<string>(pinnedMessages.map((pin) => pin.messageId)),
+    [pinnedMessages],
+  );
+  const toggleMessagePin = useCallback(
+    (message: ChatMessage) => {
+      if (!activeThreadId || !activeThread || message.role === "system") return;
+      if (pinnedMessageIds.has(message.id)) {
+        unpinMessage(message.id);
+        return;
+      }
+      void pinThreadMessage({
+        environmentId: activeThread.environmentId,
+        input: {
+          threadId: activeThreadId,
+          messageId: message.id,
+          role: message.role,
+          excerpt: pinnedMessageExcerpt(message.text),
+          messageCreatedAt: message.createdAt,
+        },
+      }).then(reportPinFailure("Failed to pin message"));
+    },
+    [
+      activeThread,
+      activeThreadId,
+      pinThreadMessage,
+      pinnedMessageIds,
+      reportPinFailure,
+      unpinMessage,
+    ],
+  );
+  const messagePins = useMemo<MessagePinState | null>(
+    () =>
+      supportsMessagePinning ? { pinnedIds: pinnedMessageIds, onToggle: toggleMessagePin } : null,
+    [pinnedMessageIds, supportsMessagePinning, toggleMessagePin],
+  );
+  const [messageJumpRequest, setMessageJumpRequest] = useState<
+    (MessageJumpRequest & { readonly threadId: ThreadId }) | null
+  >(null);
+  const jumpToPinnedMessage = useCallback(
+    (messageId: MessageId) => {
+      if (!activeThreadId) return;
+      setMessageJumpRequest((current) => ({
+        threadId: activeThreadId,
+        messageId,
+        key: (current?.key ?? 0) + 1,
+      }));
+    },
+    [activeThreadId],
+  );
   // The open /usage-limits panel for this thread, model and turn. Only the open
   // moment is stored: the rows read live provider data, so a redeemed reset
   // credit or refreshed probe shows through. Anything that spends quota closes
@@ -6854,6 +6957,14 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
 
+      if (command === "thread.find") {
+        if (!isServerThread) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openThreadFind();
+        return;
+      }
+
       if (command === "modelPicker.toggle") {
         event.preventDefault();
         event.stopPropagation();
@@ -6906,6 +7017,7 @@ function ChatViewContent(props: ChatViewProps) {
     isServerThread,
     onInterrupt,
     onToggleDiff,
+    openThreadFind,
     pinThread,
     settleThread,
     supportsPinning,
@@ -9231,6 +9343,14 @@ function ChatViewContent(props: ChatViewProps) {
           rightPanelOpen={rightPanelOpen}
           gitCwd={gitCwd}
           providerUsage={activeProviderStatus?.usage ?? null}
+          {...(isServerThread ? { onOpenFind: openThreadFind } : {})}
+          {...(supportsMessagePinning
+            ? {
+                pinnedMessages,
+                onJumpToPinnedMessage: jumpToPinnedMessage,
+                onUnpinMessage: unpinMessage,
+              }
+            : {})}
           onNewThreadInProject={handleNewThreadInActiveProject}
           {...(activeDraftLogicalProjectKey
             ? { onOpenProjectSettings: handleOpenDraftProjectSettings }
@@ -9494,6 +9614,14 @@ function ChatViewContent(props: ChatViewProps) {
                 hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
                 topFadeEnabled={!hasTimelineTopBanner}
                 loadEarlier={paintOnlyDisplayedTimeline ? null : loadEarlierTurns}
+                findRequest={paintOnlyDisplayedTimeline ? null : threadFindRequest}
+                onCloseFind={closeThreadFind}
+                messagePins={paintOnlyDisplayedTimeline ? null : messagePins}
+                messageJumpRequest={
+                  !paintOnlyDisplayedTimeline && messageJumpRequest?.threadId === activeThreadId
+                    ? messageJumpRequest
+                    : null
+                }
               />
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}

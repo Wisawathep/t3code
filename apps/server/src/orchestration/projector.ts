@@ -627,6 +627,9 @@ export function projectEvent(
               ...(payload.branchPullRequest !== undefined
                 ? { branchPullRequest: payload.branchPullRequest }
                 : {}),
+              ...(payload.pinnedMessages !== undefined
+                ? { pinnedMessages: payload.pinnedMessages }
+                : {}),
               ...legacyLinkPatch,
               updatedAt: payload.updatedAt,
             }),

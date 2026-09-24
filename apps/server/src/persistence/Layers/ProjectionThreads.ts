@@ -14,13 +14,18 @@ import {
   ProjectionThreadRepository,
   type ProjectionThreadRepositoryShape,
 } from "../Services/ProjectionThreads.ts";
-import { ModelSelection, ThreadLinkedPullRequest } from "@t3tools/contracts";
+import {
+  ModelSelection,
+  OrchestrationPinnedMessage,
+  ThreadLinkedPullRequest,
+} from "@t3tools/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
     linkedPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
     branchPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
+    pinnedMessages: Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationPinnedMessage))),
   }),
 );
 type ProjectionThreadDbRow = typeof ProjectionThreadDbRow.Type;
@@ -55,6 +60,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pinned_at,
           pin_order_key,
           active_order_key,
+          pinned_messages_json,
           title_regeneration_request_id,
           title_regeneration_started_at,
           latest_user_message_at,
@@ -86,6 +92,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.pinnedAt},
           ${row.pinOrderKey ?? null},
           ${row.activeOrderKey ?? null},
+          ${row.pinnedMessages === undefined || row.pinnedMessages === null || row.pinnedMessages.length === 0 ? null : JSON.stringify(row.pinnedMessages)},
           ${row.titleRegenerationRequestId ?? null},
           ${row.titleRegenerationStartedAt ?? null},
           ${row.latestUserMessageAt},
@@ -117,6 +124,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pinned_at = excluded.pinned_at,
           pin_order_key = excluded.pin_order_key,
           active_order_key = excluded.active_order_key,
+          pinned_messages_json = excluded.pinned_messages_json,
           title_regeneration_request_id = excluded.title_regeneration_request_id,
           title_regeneration_started_at = excluded.title_regeneration_started_at,
           latest_user_message_at = excluded.latest_user_message_at,
@@ -155,6 +163,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pinned_at AS "pinnedAt",
           pin_order_key AS "pinOrderKey",
           active_order_key AS "activeOrderKey",
+          pinned_messages_json AS "pinnedMessages",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",
@@ -195,6 +204,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pinned_at AS "pinnedAt",
           pin_order_key AS "pinOrderKey",
           active_order_key AS "activeOrderKey",
+          pinned_messages_json AS "pinnedMessages",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",

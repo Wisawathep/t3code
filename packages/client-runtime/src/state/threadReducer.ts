@@ -277,6 +277,9 @@ export function applyThreadDetailEvent(
           ...(event.payload.activeOrderKey !== undefined
             ? { activeOrderKey: event.payload.activeOrderKey }
             : {}),
+          ...(event.payload.pinnedMessages !== undefined
+            ? { pinnedMessages: event.payload.pinnedMessages }
+            : {}),
           updatedAt: event.payload.updatedAt,
         },
       };

@@ -6,6 +6,7 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
   MessageId,
+  PINNED_MESSAGE_EXCERPT_MAX_LENGTH,
   ProjectId,
   ThreadId,
   type ThreadPullRequestSnapshot,
@@ -4321,6 +4322,91 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         return;
       }
       assert.equal(Object.hasOwn(withoutSuggestion, "suggestion"), false);
+    }),
+  );
+
+  it.effect("persists pinned messages for thread details and the command read model", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const projectId = ProjectId.make("project-message-pins");
+      const threadId = ThreadId.make("thread-message-pins");
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+      };
+      const now = "2026-01-01T00:00:00.000Z";
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-message-pins-project"),
+        projectId,
+        title: "Pins project",
+        workspaceRoot: "/tmp/project-message-pins",
+        defaultModelSelection: modelSelection,
+        createdAt: now,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-message-pins-thread"),
+        threadId,
+        projectId,
+        title: "Pins thread",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+      });
+      const pin = (messageId: string, excerpt: string) =>
+        engine.dispatch({
+          type: "thread.message.pin",
+          commandId: CommandId.make(`cmd-pin-${messageId}`),
+          threadId,
+          messageId: MessageId.make(messageId),
+          role: "assistant",
+          excerpt,
+          messageCreatedAt: now,
+        });
+      yield* pin(
+        "message-a",
+        `first
+
+  ${"x".repeat(400)}`,
+      );
+      yield* pin("message-b", "second");
+      // A duplicate pin keeps the original entry and position.
+      yield* pin("message-a", "changed");
+      yield* engine.dispatch({
+        type: "thread.message.unpin",
+        commandId: CommandId.make("cmd-unpin-message-b"),
+        threadId,
+        messageId: MessageId.make("message-b"),
+      });
+
+      const snapshot = yield* snapshotQuery.getThreadDetailSnapshot(threadId);
+      assert.equal(snapshot._tag, "Some");
+      if (snapshot._tag !== "Some") {
+        return;
+      }
+      const pins = snapshot.value.thread.pinnedMessages ?? [];
+      assert.deepEqual(
+        pins.map((entry) => entry.messageId),
+        ["message-a"],
+      );
+      assert.equal(pins[0]?.excerpt.startsWith("first xxx"), true);
+      assert.equal(pins[0]?.excerpt.length, PINNED_MESSAGE_EXCERPT_MAX_LENGTH);
+      // Pinning is not thread activity.
+      assert.equal(snapshot.value.thread.updatedAt, now);
+
+      // The engine boots from the command read model, so pins must survive a restart there.
+      const commandReadModel = yield* snapshotQuery.getCommandReadModel();
+      const commandThread = commandReadModel.threads.find((thread) => thread.id === threadId);
+      assert.deepEqual(
+        commandThread?.pinnedMessages?.map((entry) => entry.messageId),
+        ["message-a"],
+      );
     }),
   );
 

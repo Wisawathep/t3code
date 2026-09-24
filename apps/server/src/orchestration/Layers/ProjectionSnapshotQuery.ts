@@ -29,6 +29,7 @@ import {
   ModelSelection,
   ProjectId,
   ThreadLinkedPullRequest,
+  OrchestrationPinnedMessage,
   ThreadId,
   TrimmedNonEmptyString,
   ThreadPullRequestSnapshot,
@@ -135,8 +136,13 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     modelSelection: Schema.fromJsonString(ModelSelection),
     linkedPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
     branchPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
+    pinnedMessages: Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationPinnedMessage))),
   }),
 );
+// Threads without pins omit the field, which keeps their payloads unchanged.
+const pinnedMessagesField = (
+  pinnedMessages: ReadonlyArray<OrchestrationPinnedMessage> | null | undefined,
+) => (pinnedMessages && pinnedMessages.length > 0 ? { pinnedMessages } : {});
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   Struct.assign({
     payload: Schema.fromJsonString(Schema.Unknown),
@@ -608,6 +614,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pinned_at AS "pinnedAt",
           pin_order_key AS "pinOrderKey",
           active_order_key AS "activeOrderKey",
+          pinned_messages_json AS "pinnedMessages",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",
@@ -648,6 +655,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pinned_at AS "pinnedAt",
           pin_order_key AS "pinOrderKey",
           active_order_key AS "activeOrderKey",
+          pinned_messages_json AS "pinnedMessages",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",
@@ -690,6 +698,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pinned_at AS "pinnedAt",
           pin_order_key AS "pinOrderKey",
           active_order_key AS "activeOrderKey",
+          pinned_messages_json AS "pinnedMessages",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",
@@ -1275,6 +1284,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pinned_at AS "pinnedAt",
           pin_order_key AS "pinOrderKey",
           active_order_key AS "activeOrderKey",
+          pinned_messages_json AS "pinnedMessages",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",
@@ -2561,6 +2571,7 @@ pending_approval_requests AS (
                   activeOrderKey: row.activeOrderKey ?? null,
                   titleRegeneration: mapTitleRegeneration(row),
                   deletedAt: row.deletedAt,
+                  ...pinnedMessagesField(row.pinnedMessages),
                   messages: messagesByThread.get(row.threadId) ?? [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
                   activities: activitiesByThread.get(row.threadId) ?? [],
@@ -2809,6 +2820,7 @@ pending_approval_requests AS (
                   activeOrderKey: row.activeOrderKey ?? null,
                   titleRegeneration: mapTitleRegeneration(row),
                   deletedAt: row.deletedAt,
+                  ...pinnedMessagesField(row.pinnedMessages),
                   messages: [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
                   activities: [],
@@ -3874,6 +3886,7 @@ pending_approval_requests AS (
         activeOrderKey: threadRow.value.activeOrderKey ?? null,
         titleRegeneration: mapTitleRegeneration(threadRow.value),
         deletedAt: null,
+        ...pinnedMessagesField(threadRow.value.pinnedMessages),
         messages: messageRows
           .filter(
             (row) =>

@@ -34,6 +34,8 @@ import {
   SnapShotAccessibility,
   isProviderSendTurnSupportedImageMimeType,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+  PINNED_MESSAGE_EXCERPT_MAX_LENGTH,
+  pinnedMessageExcerpt,
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
@@ -1547,4 +1549,19 @@ it("isProviderSendTurnSupportedImageMimeType accepts raster formats and rejects 
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("image/png"), true);
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("IMAGE/JPEG"), true);
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("image/svg+xml"), false);
+});
+
+it("pinnedMessageExcerpt drops common Markdown markers and collapses whitespace", () => {
+  assert.strictEqual(
+    pinnedMessageExcerpt(
+      '## **"เปิด 360°" คืออะไร**\n\n- See [index.html](file:///a/index.html) and `L3440`\n```ts\nconst x = 1;\n```',
+    ),
+    '"เปิด 360°" คืออะไร See index.html and L3440 const x = 1;',
+  );
+});
+
+it("pinnedMessageExcerpt trims long text to the maximum length with an ellipsis", () => {
+  const excerpt = pinnedMessageExcerpt("word ".repeat(200));
+  assert.isAtMost(excerpt.length, PINNED_MESSAGE_EXCERPT_MAX_LENGTH);
+  assert.isTrue(excerpt.endsWith("…"));
 });

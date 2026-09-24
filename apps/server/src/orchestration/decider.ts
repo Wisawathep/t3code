@@ -1,11 +1,13 @@
 import {
   EventId,
+  MAX_PINNED_MESSAGES_PER_THREAD,
   MAX_SCRIPT_ID_LENGTH,
   SCRIPT_RUN_COMMAND_PATTERN,
   MessageId,
   ThreadLinkedPullRequest,
   UserInputRequestedPayload,
   isImportedAgentSessionMessageId,
+  pinnedMessageExcerpt,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -848,6 +850,56 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           orderKey: command.orderKey,
           updatedAt: keyUnchanged ? thread.updatedAt : occurredAt,
+        },
+      };
+    }
+
+    case "thread.message.pin":
+    case "thread.message.unpin": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const pins = thread.pinnedMessages ?? [];
+      const existing = pins.some((pin) => pin.messageId === command.messageId);
+      const occurredAt = yield* nowIso;
+      let pinnedMessages = pins;
+      if (command.type === "thread.message.pin" && !existing) {
+        if (pins.length >= MAX_PINNED_MESSAGES_PER_THREAD) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `thread ${command.threadId} already has ${MAX_PINNED_MESSAGES_PER_THREAD} pinned messages`,
+          });
+        }
+        pinnedMessages = [
+          ...pins,
+          {
+            messageId: command.messageId,
+            role: command.role,
+            excerpt: pinnedMessageExcerpt(command.excerpt),
+            messageCreatedAt: command.messageCreatedAt,
+            pinnedAt: occurredAt,
+          },
+        ];
+      } else if (command.type === "thread.message.unpin" && existing) {
+        pinnedMessages = pins.filter((pin) => pin.messageId !== command.messageId);
+      }
+      // A duplicate pin or unpin re-emits the current list, which projects as
+      // a no-op, like the other idempotent thread commands.
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: command.threadId,
+          pinnedMessages,
+          // Pinning a message is not thread activity; the sidebar order stays put.
+          updatedAt: thread.updatedAt,
         },
       };
     }

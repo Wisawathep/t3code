@@ -337,7 +337,8 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.checkpoint-navigation-failed"
       | "thread.checkpoint-forward-history-abandoned"
       | "thread.reverted"
-      | "thread.session-set";
+      | "thread.session-set"
+      | "thread.meta-updated";
   }
 > {
   return (
@@ -350,7 +351,10 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.checkpoint-navigation-failed" ||
     event.type === "thread.checkpoint-forward-history-abandoned" ||
     event.type === "thread.reverted" ||
-    event.type === "thread.session-set"
+    event.type === "thread.session-set" ||
+    // Pinned messages live only on thread details. Other metadata reaches
+    // clients through the shell stream.
+    (event.type === "thread.meta-updated" && event.payload.pinnedMessages !== undefined)
   );
 }
 

@@ -17,4 +17,11 @@ describe("isThreadDetailEvent", () => {
       expect(isThreadDetailEvent({ type } as OrchestrationEvent)).toBe(true);
     }
   });
+
+  it("delivers only metadata updates that carry pinned messages", () => {
+    const metaUpdate = (payload: object) =>
+      ({ type: "thread.meta-updated", payload }) as OrchestrationEvent;
+    expect(isThreadDetailEvent(metaUpdate({ pinnedMessages: [] }))).toBe(true);
+    expect(isThreadDetailEvent(metaUpdate({ title: "Renamed" }))).toBe(false);
+  });
 });
