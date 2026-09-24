@@ -691,6 +691,8 @@ Don't forget to update the `base` tag after each merge to track the latest share
 - Reapplied the local DL026 gateway fixes: Claude disabled-gateway snapshots are authoritative, successful gateway catalogs supplement built-in models, and gateway-discovered rows appear in the instance model picker.
 - Dropped the local "scope model search to selected provider" merge because the release already carries the same change as DL033.
 - Adopted the release's prompt suggestions (DL034), migration `062`, and its merge-history record.
+- Local QA passed `vp check`, `vp run typecheck`, and focused prompt-queue, model-selection, provider-registry, gateway, and fork-release tests. `scripts/build-desktop-artifact.test.ts` has 7 Windows-host failures that occur with or without this merge.
+- Built the unsigned Windows x64 NSIS installer as `release/T3-Code-0.0.40-a-x64.exe`; the builder validated 58 payload files and 26 sidecar natives. This host lacks the MSVC Spectre-mitigated libraries, so the resource monitor was built with cargo first and packaged with `T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR=true`. `TMP` pointed at `D:\t3build-tmp` because `C:\Users\Tutu\node_modules` defeats the self-containment probe. No Linux node-pty prebuild was available, so the WSL runtime is omitted, as in 0.0.38. Nothing was pushed.
 
 ### 2026-09-09 — Merge upstream/main into main (local fork)
 
