@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 
 import * as DesktopIpc from "./DesktopIpc.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
+import { checkForkRelease, mergeAndBuildForkRelease } from "./methods/forkRelease.ts";
 import {
   clearConnectionCatalog,
   getConnectionCatalog,
@@ -132,6 +133,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(downloadUpdate);
   yield* ipc.handle(installUpdate);
   yield* ipc.handle(checkForUpdate);
+  yield* ipc.handle(checkForkRelease);
+  yield* ipc.handle(mergeAndBuildForkRelease);
   for (const previewMethod of PreviewIpc.methods) {
     yield* ipc.handle(previewMethod);
   }

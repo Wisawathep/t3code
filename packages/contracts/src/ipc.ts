@@ -428,6 +428,36 @@ export const DesktopUpdateCheckResultSchema = Schema.Struct({
   state: DesktopUpdateStateSchema,
 });
 
+/**
+ * Result of `scripts/fork-release.ts check --json`, run against the source
+ * checkout a fork's desktop build was made from. `available` means the
+ * newest GitHub release of the checkout's `origin` repository is not yet
+ * merged; `conflicts` lists files that merge would conflict in.
+ */
+export const DesktopForkReleaseCheckSchema = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literals(["available", "up-to-date"]),
+    repository: Schema.String,
+    sourceDir: Schema.String,
+    currentRelease: Schema.NullOr(Schema.String),
+    latestRelease: Schema.Struct({
+      tag: Schema.String,
+      name: Schema.String,
+      url: Schema.String,
+      publishedAt: Schema.NullOr(Schema.String),
+    }),
+    buildVersion: Schema.NullOr(Schema.String),
+    conflicts: Schema.Array(Schema.String),
+    dirty: Schema.Boolean,
+  }),
+  Schema.Struct({
+    status: Schema.Literals(["error", "unavailable"]),
+    sourceDir: Schema.NullOr(Schema.String),
+    message: Schema.String,
+  }),
+]);
+export type DesktopForkReleaseCheck = typeof DesktopForkReleaseCheckSchema.Type;
+
 // Stable id for the Windows-native primary backend. Desktop side wraps
 // this with a brand inside DesktopBackendManager; web side keeps it as
 // a plain string so the env-runtime can compare against it without
@@ -1325,6 +1355,15 @@ export interface DesktopBridge {
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
+  /**
+   * Fork builds only: check the source checkout's upstream-fork releases and
+   * start a merge-and-build of a newer one in a terminal window. Optional:
+   * builds without it keep the regular updater controls.
+   */
+  forkRelease?: {
+    check: () => Promise<DesktopForkReleaseCheck>;
+    mergeAndBuild: (tag: string) => Promise<void>;
+  };
   /** Present when the desktop shell accepts `t3 app` activation requests. */
   appActivation?: {
     setReady: (ready: boolean) => Promise<void>;

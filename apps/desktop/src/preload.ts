@@ -220,6 +220,11 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   checkForUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_CHECK_CHANNEL),
   downloadUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL),
   installUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL),
+  forkRelease: {
+    check: () => ipcRenderer.invoke(IpcChannels.FORK_RELEASE_CHECK_CHANNEL),
+    mergeAndBuild: (tag) =>
+      ipcRenderer.invoke(IpcChannels.FORK_RELEASE_MERGE_AND_BUILD_CHANNEL, tag),
+  },
   onUpdateState: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
       if (typeof state !== "object" || state === null) return;

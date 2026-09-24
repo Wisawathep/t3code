@@ -1,5 +1,6 @@
 import { Spinner } from "~/components/ui/spinner";
 import { NotificationSettings } from "./NotificationSettings";
+import { ForkReleaseVersionRow } from "./ForkReleaseVersionRow";
 import { ArchiveIcon, ArchiveX, ChevronRightIcon, SettingsIcon } from "lucide-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type { CSSProperties, ReactNode } from "react";
@@ -390,6 +391,13 @@ function AboutVersionSection() {
     action === "download" || action === "install"
       ? "Update available."
       : "Current version of the application.";
+
+  // Fork builds ship without an update feed; they follow the fork's GitHub
+  // releases and rebuild locally instead.
+  const forkRelease = hasDesktopBridge ? window.desktopBridge?.forkRelease : undefined;
+  if (forkRelease && updateState?.enabled === false) {
+    return <ForkReleaseVersionRow title={<AboutVersionTitle />} forkRelease={forkRelease} />;
+  }
 
   return (
     <>

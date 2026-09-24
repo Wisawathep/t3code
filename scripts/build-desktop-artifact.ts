@@ -940,6 +940,8 @@ interface StagePackageJson {
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
+  /** Checkout the build came from; the fork release updater merges and rebuilds there. */
+  readonly t3codeSourceDir: string;
   readonly private: true;
   readonly packageManager: string;
   readonly description: string;
@@ -3812,6 +3814,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
+    t3codeSourceDir: repoRoot,
     private: true,
     packageManager: rootPackageJson.packageManager,
     description: "T3 Code desktop build",

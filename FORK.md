@@ -646,6 +646,35 @@ its own delivery semantics.
 
 **Last updated:** 2026-09-07
 
+### DL036 — Fork release check and local Merge and Build
+
+Desktop builds without an update feed (every local fork build) replace the About → Version updater
+controls with a fork release row. "Check for Updates" runs `scripts/fork-release.ts check --json`
+in the checkout the build came from: it reads the newest published GitHub release (prereleases
+included) of that checkout's `origin` repository, fetches only that tag, and reports whether `HEAD`
+already contains it. A `git merge-tree` dry run lists the files a merge would conflict in, without
+touching the worktree. "Merge and Build" appears only when a newer release exists. It is disabled
+when the dry run finds conflicts or tracked files are dirty, so it never leaves a conflicted merge
+behind. When confirmed, it opens a terminal window that saves `backup/pre-merge-<tag>`, merges the
+tag, runs `vp i`, and builds the host platform's installer into `release/` with the tag's version.
+
+The packaged app finds its checkout through `t3codeSourceDir`, which the artifact builder writes to
+the staged `package.json`; development runs use the repository root. Builds whose checkout is
+missing report the row as unavailable. The terminal flow does not update this file. Record each
+merge here afterward.
+
+**Implementation evidence:** `scripts/fork-release.ts` (+ test),
+`apps/desktop/src/ipc/methods/forkRelease.ts`, `apps/desktop/src/preload.ts`,
+`packages/contracts/src/ipc.ts`, `scripts/build-desktop-artifact.ts`,
+`apps/web/src/components/settings/ForkReleaseVersionRow.tsx`, and
+`apps/web/src/components/settings/SettingsPanels.tsx`.
+
+**Recorded validation:** focused script helper tests; `check` against this checkout (up to date
+with `v0.0.40-c`) and against the pre-merge commit (available, with conflicts listed and a dirty
+checkout refused); `vp check`; and `vp run typecheck`.
+
+**Last updated:** 2026-09-24
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
