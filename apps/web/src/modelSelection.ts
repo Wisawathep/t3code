@@ -37,6 +37,11 @@ const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
 const DEFAULT_TEXT_GENERATION_INSTANCE_ID = ProviderInstanceId.make("codex");
 
+function isGatewayDiscoveredModel(model: ServerProvider["models"][number]): boolean {
+  const source = model.metadata?.source?.trim().toLowerCase();
+  return source === "gateway" || source === "api-gateway";
+}
+
 /**
  * Resolve the custom-model list for a given instance, preferring the
  * instance's own `providerInstances[id].config.customModels` blob when
@@ -187,25 +192,30 @@ function getAppModelOptions(
 ): AppModelOption[] {
   const rawModels = getProviderModels(providers, provider);
   // Server-reported custom rows mirror settings and can lag a removal, so
-  // only built-ins are taken from the snapshot; custom rows are rebuilt from
-  // settings below.
-  const options: AppModelOption[] = rawModels
-    .filter((model) => !model.isCustom)
-    .map(toAppModelOption);
-  const seen = new Set(options.map((option) => option.slug));
+  // only built-ins and gateway-discovered rows are taken from the snapshot;
+  // other custom rows are rebuilt from settings below.
+  const defaultInstanceId = defaultInstanceIdForDriver(provider);
+  const customModels = readInstanceCustomModels(settings, defaultInstanceId, provider);
   const builtInModelSlugs = new Set(
-    Arr.filterMap(getProviderModels(providers, provider), (model) =>
+    Arr.filterMap(rawModels, (model) =>
       model.isCustom ? Result.failVoid : Result.succeed(model.slug),
     ),
   );
-
   // Read from the default instance's config first (that's where edits
   // now land), falling back to the legacy per-kind bucket so unmigrated
   // settings and the initial render before the first write both still
   // see the user's authored custom models.
-  const defaultInstanceId = defaultInstanceIdForDriver(provider);
-  const customModels = readInstanceCustomModels(settings, defaultInstanceId, provider);
-  for (const entry of normalizeCustomModelEntries(customModels, builtInModelSlugs)) {
+  const configuredCustomModels = normalizeCustomModelEntries(customModels, builtInModelSlugs);
+  const customModelSlugs = new Set(configuredCustomModels.map((model) => model.slug));
+  const options: AppModelOption[] = rawModels
+    .filter(
+      (model) =>
+        !model.isCustom || (isGatewayDiscoveredModel(model) && !customModelSlugs.has(model.slug)),
+    )
+    .map(toAppModelOption);
+  const seen = new Set(options.map((option) => option.slug));
+
+  for (const entry of configuredCustomModels) {
     if (seen.has(entry.slug)) {
       continue;
     }
@@ -225,35 +235,40 @@ function getAppModelOptions(
 }
 
 /**
- * Instance-scoped variant of {@link getAppModelOptions}. Built-in models
- * come from the instance's own `entry.models` snapshot (rather than the
- * first-matching-kind fallback in `getProviderModels`), so each custom
- * instance gets the precise model list its driver reported. Custom model
- * slugs come from the instance's own `providerInstances[id].config.customModels`
- * when present, falling back to the legacy per-kind
- * `settings.providers[driverKind].customModels` bucket for default
- * instances only. This keeps two instances of the same kind from leaking
- * custom slugs into each other. Custom rows reported by the server are
- * ignored so a slug removed in Settings disappears without waiting for the
- * next provider probe.
+ * Instance-scoped variant of {@link getAppModelOptions}. Built-in and
+ * gateway-discovered models come from the instance's own `entry.models`
+ * snapshot (rather than the first-matching-kind fallback in
+ * `getProviderModels`), so each custom instance gets the precise model list
+ * its driver reported. Custom model slugs come from the instance's own
+ * `providerInstances[id].config.customModels` when present, falling back to
+ * the legacy per-kind `settings.providers[driverKind].customModels` bucket
+ * for default instances only. This keeps two instances of the same kind from
+ * leaking custom slugs into each other. Other custom rows reported by the
+ * server are ignored so a slug removed in Settings disappears without
+ * waiting for the next provider probe.
  */
 export function getAppModelOptionsForInstance(
   settings: UnifiedSettings,
   entry: ProviderInstanceEntry,
   selectedModel?: string | null,
 ): AppModelOption[] {
-  const options: AppModelOption[] = entry.models
-    .filter((model) => !model.isCustom)
-    .map(toAppModelOption);
-  const seen = new Set(options.map((option) => option.slug));
+  const customModels = readInstanceCustomModels(settings, entry.instanceId, entry.driverKind);
   const builtInModelSlugs = new Set(
     Arr.filterMap(entry.models, (model) =>
       model.isCustom ? Result.failVoid : Result.succeed(model.slug),
     ),
   );
+  const configuredCustomModels = normalizeCustomModelEntries(customModels, builtInModelSlugs);
+  const customModelSlugs = new Set(configuredCustomModels.map((model) => model.slug));
+  const options: AppModelOption[] = entry.models
+    .filter(
+      (model) =>
+        !model.isCustom || (isGatewayDiscoveredModel(model) && !customModelSlugs.has(model.slug)),
+    )
+    .map(toAppModelOption);
+  const seen = new Set(options.map((option) => option.slug));
 
-  const customModels = readInstanceCustomModels(settings, entry.instanceId, entry.driverKind);
-  for (const custom of normalizeCustomModelEntries(customModels, builtInModelSlugs)) {
+  for (const custom of configuredCustomModels) {
     if (seen.has(custom.slug)) {
       continue;
     }

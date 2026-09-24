@@ -254,6 +254,79 @@ describe("instance-scoped model selection", () => {
     ).toEqual(["claude-sonnet-4-6", "openai/gpt-5.5"]);
   });
 
+  it("includes gateway-discovered models on their provider instance", () => {
+    const gatewaySlug = "gpt-5.5";
+    const openrouterProvider = provider({
+      instanceId: "claude_openrouter",
+      models: ["claude-sonnet-4-6"],
+    });
+    const providers = [
+      provider({ instanceId: "claudeAgent", models: ["claude-sonnet-4-6"] }),
+      {
+        ...openrouterProvider,
+        models: [
+          ...openrouterProvider.models,
+          {
+            slug: gatewaySlug,
+            name: "GPT 5.5",
+            isCustom: true,
+            capabilities: {},
+            metadata: { source: "gateway" },
+          },
+        ],
+      },
+    ];
+    const entries = deriveProviderInstanceEntries(providers);
+    const stock = entries.find((entry) => entry.instanceId === "claudeAgent")!;
+    const openrouter = entries.find((entry) => entry.instanceId === "claude_openrouter")!;
+
+    expect(
+      getAppModelOptionsForInstance(settingsWithProviderInstances(), stock),
+    ).not.toContainEqual(expect.objectContaining({ slug: gatewaySlug }));
+    expect(
+      getAppModelOptionsForInstance(settingsWithProviderInstances(), openrouter),
+    ).toContainEqual(expect.objectContaining({ slug: gatewaySlug, name: "GPT 5.5" }));
+  });
+
+  it("prefers a configured custom model over a same-slug gateway model", () => {
+    const gatewaySlug = "gpt-5.5";
+    const baseProvider = provider({
+      instanceId: "claude_openrouter",
+      models: ["claude-sonnet-4-6"],
+    });
+    const providers = [
+      {
+        ...baseProvider,
+        models: [
+          ...baseProvider.models,
+          {
+            slug: gatewaySlug,
+            name: "Gateway GPT",
+            isCustom: true,
+            capabilities: {},
+            metadata: { source: "gateway" },
+          },
+        ],
+      },
+    ];
+    const settings: UnifiedSettings = {
+      ...settingsWithProviderInstances(),
+      providerInstances: {
+        ...settingsWithProviderInstances().providerInstances,
+        [ProviderInstanceId.make("claude_openrouter")]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          config: { customModels: [{ slug: gatewaySlug, name: "Configured GPT" }] },
+        },
+      },
+    };
+    const openrouter = deriveProviderInstanceEntries(providers)[0]!;
+
+    const options = getAppModelOptionsForInstance(settings, openrouter);
+    expect(options.filter((option) => option.slug === gatewaySlug)).toEqual([
+      expect.objectContaining({ slug: gatewaySlug, name: "Configured GPT", isCustom: true }),
+    ]);
+  });
+
   it("applies persisted per-instance model ordering", () => {
     const providers = [
       provider({
