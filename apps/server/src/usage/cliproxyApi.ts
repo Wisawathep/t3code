@@ -232,7 +232,9 @@ export const makeCliproxyApi = Effect.gen(function* () {
                 five_hour: usage.five_hour ?? null,
                 seven_day: usage.seven_day ?? null,
                 model_scoped,
-              } as Parameters<typeof claudeUsageResponseToLimits>[0]["response"]["rate_limits"],
+              } as unknown as NonNullable<
+                Parameters<typeof claudeUsageResponseToLimits>[0]["response"]["rate_limits"]
+              >,
             },
           }).limits,
         };

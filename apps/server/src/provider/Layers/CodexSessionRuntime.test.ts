@@ -5,74 +5,113 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe } from "vite-plus/test";
 import { DEFAULT_MODEL, ThreadId } from "@t3tools/contracts";
+import { buildPromptSuggestionInstructions } from "@t3tools/shared/promptSuggestion";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
-import {
-  buildCodexDeveloperInstructions,
-  codexDefaultModeDeveloperInstructions,
-  codexPlanModeDeveloperInstructions,
-} from "../CodexDeveloperInstructions.ts";
+import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
-  codexUsageLimitRetryAt,
   describeMcpElicitation,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
-  opensCodexSubagentRoute,
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
-  prepareCodexConversationCursor,
+  readCodexThread,
+  rollbackCodexThread,
   toMcpElicitationResponse,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
-describe("codexUsageLimitRetryAt", () => {
-  it("uses the latest future reset among exhausted applicable constraints", () => {
-    const retryAt = codexUsageLimitRetryAt(
-      {
-        rateLimits: {
-          limitId: "codex",
-          primary: { usedPercent: 100, resetsAt: 1_800_000_100, windowDurationMins: 300 },
-          secondary: { usedPercent: 100, resetsAt: 1_800_000_200, windowDurationMins: 10080 },
-          credits: null,
-          individualLimit: null,
-          spendControlReached: false,
-          planType: "pro",
-          rateLimitReachedType: "rate_limit_reached",
-        },
-        rateLimitsByLimitId: {},
-        rateLimitResetCredits: null,
-      },
-      1_800_000_000_000,
+describe("Codex thread history", () => {
+  for (const numTurns of [1, 2, 3, 5]) {
+    it.effect(`reverts ${numTurns} paginated turns at the durable boundary`, () =>
+      Effect.gen(function* () {
+        let retained = ["turn-1", "turn-2", "turn-3"];
+        const client: Parameters<typeof rollbackCodexThread>[0] = {
+          request: () => Effect.die("Legacy history API must not be used for paginated threads"),
+          raw: {
+            request: (method, params) =>
+              Effect.sync(() => {
+                if (method === "thread/read") return { thread: { historyMode: "paginated" } };
+                if (method === "thread/turns/list") {
+                  const { cursor } = params as { cursor: string | null };
+                  const start = cursor === null ? 0 : Number(cursor);
+                  const ids = retained.slice(start, start + 2);
+                  return {
+                    data: ids.map((id) => ({ id, items: [], status: "completed" })),
+                    nextCursor: start + 2 < retained.length ? String(start + 2) : null,
+                  };
+                }
+                NodeAssert.equal(method, "thread/revert");
+                const { beforeTurnId } = params as { beforeTurnId: string };
+                retained = retained.slice(0, retained.indexOf(beforeTurnId));
+                return { thread: { id: "thread-1", turns: [] } };
+              }),
+          },
+        };
+        const result = yield* rollbackCodexThread(client, "thread-1", numTurns);
+        const expected = ["turn-1", "turn-2", "turn-3"].slice(0, Math.max(0, 3 - numTurns));
+        NodeAssert.deepEqual(
+          result.turns.map((turn) => turn.id),
+          expected,
+        );
+        NodeAssert.deepEqual(
+          (yield* readCodexThread(client, "thread-1")).turns.map((turn) => turn.id),
+          expected,
+        );
+      }),
     );
+  }
 
-    NodeAssert.equal(retryAt, "2027-01-15T08:03:20.000Z");
-  });
-
-  it("ignores unexhausted and expired windows", () => {
-    const retryAt = codexUsageLimitRetryAt(
-      {
-        rateLimits: {
-          limitId: "codex",
-          primary: { usedPercent: 99, resetsAt: 1_800_000_200, windowDurationMins: 300 },
-          secondary: { usedPercent: 100, resetsAt: 1_799_999_999, windowDurationMins: 10080 },
-          credits: null,
-          individualLimit: null,
-          spendControlReached: false,
-          planType: "pro",
-          rateLimitReachedType: "rate_limit_reached",
-        },
-        rateLimitsByLimitId: {},
-        rateLimitResetCredits: null,
-      },
-      1_800_000_000_000,
+  for (const cursors of [
+    ["next", "next"],
+    ["first", "second", "first"],
+  ]) {
+    it.effect(`rejects a pagination cursor cycle: ${cursors.join(", ")}`, () =>
+      Effect.gen(function* () {
+        let pageCount = 0;
+        const client: Parameters<typeof readCodexThread>[0] = {
+          request: () => Effect.die("Unexpected legacy request"),
+          raw: {
+            request: (method) =>
+              Effect.sync(() => {
+                if (method === "thread/read") return { thread: { historyMode: "paginated" } };
+                NodeAssert.ok(pageCount < cursors.length, "Repeated cursor was requested");
+                return { data: [], nextCursor: cursors[pageCount++] };
+              }),
+          },
+        };
+        const error = yield* Effect.flip(readCodexThread(client, "thread-1"));
+        NodeAssert.ok(isCodexAppServerRequestError(error));
+        NodeAssert.equal(pageCount, cursors.length);
+      }),
     );
+  }
 
-    NodeAssert.equal(retryAt, undefined);
-  });
+  it.effect("keeps the count-based rollback API for older threads", () =>
+    Effect.gen(function* () {
+      const client: Parameters<typeof rollbackCodexThread>[0] = {
+        raw: { request: () => Effect.succeed({ thread: {} }) },
+        request: <M extends CodexRpc.ClientRequestMethod>(
+          method: M,
+          params: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          NodeAssert.equal(method, "thread/rollback");
+          NodeAssert.deepEqual(params, { threadId: "legacy-thread", numTurns: 2 });
+          return Effect.succeed({
+            thread: { id: "legacy-thread", turns: [] },
+          } as unknown as CodexRpc.ClientRequestResponsesByMethod[M]);
+        },
+      };
+      NodeAssert.deepEqual(yield* rollbackCodexThread(client, "legacy-thread", 2), {
+        threadId: "legacy-thread",
+        turns: [],
+      });
+    }),
+  );
 });
 
 describe("CodexSessionRuntimeIdentifierGenerationError", () => {
@@ -88,32 +127,6 @@ describe("CodexSessionRuntimeIdentifierGenerationError", () => {
     NodeAssert.equal(
       error.message,
       "Failed to generate Codex App Server identifier for provider-event.",
-    );
-  });
-});
-
-describe("opensCodexSubagentRoute", () => {
-  it("registers only spawn and resume lifecycle events as child routes", () => {
-    NodeAssert.equal(opensCodexSubagentRoute({ type: "subAgentActivity", kind: "started" }), true);
-    NodeAssert.equal(
-      opensCodexSubagentRoute({ type: "subAgentActivity", kind: "interacted" }),
-      false,
-    );
-    NodeAssert.equal(
-      opensCodexSubagentRoute({ type: "subAgentActivity", kind: "interrupted" }),
-      false,
-    );
-    NodeAssert.equal(
-      opensCodexSubagentRoute({ type: "collabAgentToolCall", tool: "spawnAgent" }),
-      true,
-    );
-    NodeAssert.equal(
-      opensCodexSubagentRoute({ type: "collabAgentToolCall", tool: "resumeAgent" }),
-      true,
-    );
-    NodeAssert.equal(
-      opensCodexSubagentRoute({ type: "collabAgentToolCall", tool: "sendInput" }),
-      false,
     );
   });
 });
@@ -142,6 +155,35 @@ function makeThreadOpenResponse(
 }
 
 describe("buildTurnStartParams", () => {
+  it.effect(
+    "appends prompt suggestions for plain, default, and plan turns only when provided",
+    () =>
+      Effect.gen(function* () {
+        const block = buildPromptSuggestionInstructions("Prefer a focused test as the next step.");
+        for (const interactionMode of [undefined, "default", "plan"] as const) {
+          const input = {
+            threadId: "provider-thread-1",
+            runtimeMode: "full-access" as const,
+            ...(interactionMode ? { interactionMode } : {}),
+          };
+          const enabled = yield* buildTurnStartParams({
+            ...input,
+            promptSuggestionInstructions: block,
+          });
+          const instructions = enabled.collaborationMode?.settings.developer_instructions;
+          NodeAssert.equal(enabled.collaborationMode?.mode, interactionMode ?? "default");
+          NodeAssert.ok(instructions?.endsWith(`\n\n${block}`));
+
+          const disabled = yield* buildTurnStartParams(input);
+          NodeAssert.ok(
+            !disabled.collaborationMode?.settings.developer_instructions?.includes(
+              "<t3_prompt_suggestion>",
+            ),
+          );
+        }
+      }),
+  );
+
   it("keeps invalid turn values only in the schema cause", () => {
     const secret = "codex-turn-input-secret-sentinel";
     const error = Effect.runSync(
@@ -624,27 +666,6 @@ describe("T3 browser developer instructions", () => {
   });
 });
 
-describe("T3 thread developer instructions", () => {
-  it("distinguishes durable user-visible threads from native subagents", () => {
-    for (const instructions of [
-      codexDefaultModeDeveloperInstructions(true),
-      codexPlanModeDeveloperInstructions(true),
-    ]) {
-      NodeAssert.match(instructions, /durable, user-visible T3 threads/);
-      NodeAssert.match(instructions, /native subagents for private, short-lived fan-out/);
-    }
-  });
-
-  it("omits thread guidance when the product MCP server is unavailable", () => {
-    for (const instructions of [
-      codexDefaultModeDeveloperInstructions(false),
-      codexPlanModeDeveloperInstructions(false),
-    ]) {
-      NodeAssert.doesNotMatch(instructions, /T3 Code threads/);
-    }
-  });
-});
-
 describe("hasConfiguredMcpServer", () => {
   it("detects inline Codex MCP configuration arguments", () => {
     NodeAssert.equal(hasConfiguredMcpServer(undefined), false);
@@ -822,21 +843,12 @@ describe("codexSessionAppServerArgs", () => {
 });
 
 describe("isRecoverableThreadResumeError", () => {
-  it("matches missing thread and rollout errors", () => {
+  it("matches missing thread errors", () => {
     NodeAssert.equal(
       isRecoverableThreadResumeError(
         new CodexErrors.CodexAppServerRequestError({
           code: -32603,
           errorMessage: "Thread does not exist",
-        }),
-      ),
-      true,
-    );
-    NodeAssert.equal(
-      isRecoverableThreadResumeError(
-        new CodexErrors.CodexAppServerRequestError({
-          code: -32603,
-          errorMessage: "no rollout found for thread id native-thread",
         }),
       ),
       true,
@@ -1055,74 +1067,6 @@ describe("openCodexThread", () => {
 
       NodeAssert.ok(isCodexAppServerRequestError(error));
       NodeAssert.equal(error.errorMessage, "timed out waiting for server");
-    }),
-  );
-});
-
-describe("prepareCodexConversationCursor", () => {
-  it.effect("forks before rollback and preserves the source as a forward binding", () =>
-    Effect.gen(function* () {
-      type Method = "thread/read" | "thread/fork" | "thread/rollback" | "thread/delete";
-      const calls: Array<{ method: Method; threadId: string; numTurns?: number }> = [];
-      const threads = new Map<string, Array<string>>([
-        ["source-thread", ["turn-1", "turn-2", "turn-3"]],
-      ]);
-      const client = {
-        request: <M extends Method>(method: M, payload: CodexRpc.ClientRequestParamsByMethod[M]) =>
-          Effect.sync(() => {
-            const params = payload as { readonly threadId: string; readonly numTurns?: number };
-            calls.push({
-              method,
-              threadId: params.threadId,
-              ...(params.numTurns ? { numTurns: params.numTurns } : {}),
-            });
-            let response: unknown;
-            switch (method) {
-              case "thread/read":
-                response = {
-                  thread: {
-                    id: params.threadId,
-                    turns: (threads.get(params.threadId) ?? []).map((id) => ({ id, items: [] })),
-                  },
-                };
-                break;
-              case "thread/fork":
-                threads.set("fork-thread", [...(threads.get(params.threadId) ?? [])]);
-                response = { thread: { id: "fork-thread", turns: [] } };
-                break;
-              case "thread/rollback": {
-                const turns = threads.get(params.threadId) ?? [];
-                threads.set(params.threadId, turns.slice(0, -params.numTurns!));
-                response = { thread: { id: params.threadId, turns: [] } };
-                break;
-              }
-              case "thread/delete":
-                threads.delete(params.threadId);
-                response = {};
-                break;
-            }
-            return response as CodexRpc.ClientRequestResponsesByMethod[M];
-          }),
-      };
-
-      const cursor = yield* prepareCodexConversationCursor({
-        client,
-        sourceNativeThreadId: "source-thread",
-        targetTurnId: "turn-1",
-      });
-
-      NodeAssert.deepStrictEqual(calls, [
-        { method: "thread/read", threadId: "source-thread" },
-        { method: "thread/fork", threadId: "source-thread" },
-        { method: "thread/rollback", threadId: "fork-thread", numTurns: 2 },
-      ]);
-      NodeAssert.deepStrictEqual(threads.get("source-thread"), ["turn-1", "turn-2", "turn-3"]);
-      NodeAssert.deepStrictEqual(threads.get("fork-thread"), ["turn-1"]);
-      NodeAssert.deepStrictEqual(cursor, {
-        nativeThreadId: "fork-thread",
-        sourceNativeThreadId: "source-thread",
-        targetTurnId: "turn-1",
-      });
     }),
   );
 });

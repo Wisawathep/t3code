@@ -2,7 +2,9 @@ import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
 } from "@t3tools/shared/usageLimits";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
+
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -25,6 +27,7 @@ import {
   ClientSurface,
   ClientWebDeployment,
   CommandId,
+  EventId,
   type DiscoveredLocalServerList,
   type EditorId,
   type FileManagerRevealKind,
@@ -69,6 +72,7 @@ import {
   type TerminalError,
   type TerminalEvent,
   type TerminalMetadataStreamEvent,
+  type PullRequestRef,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -94,6 +98,7 @@ import {
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ThreadCommandDispatcher from "./orchestration/ThreadCommandDispatcher.ts";
+import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
 import {
   observeRpcEffect as instrumentRpcEffect,
   observeRpcStream as instrumentRpcStream,
@@ -112,6 +117,7 @@ import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
+import * as DeviceService from "./device/DeviceService.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import { deletePendingAttachment, issueAttachmentUploadUrl } from "./assets/AttachmentUpload.ts";
@@ -123,9 +129,13 @@ import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
+import { linkCreatedPullRequest } from "./git/linkCreatedPullRequest.ts";
 import * as ReviewService from "./review/ReviewService.ts";
+
+import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import { importRecentAgentThreads } from "./project/AgentSessionImporter.ts";
+
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -141,6 +151,10 @@ import * as UsageService from "./usage/UsageService.ts";
 import * as ZrokShare from "./remoteAccess/ZrokShare.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
+import { listLinkedPullRequestThreads } from "./pullRequest/linkedThreads.ts";
+import { pullRequestSyncKey } from "./pullRequest/pullRequestSyncKey.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
@@ -179,6 +193,18 @@ export const resolveFileManagerRevealKindForConfig = <E, R>(
 
 function unexpectedCompatibilityError(error: never): never {
   throw new Error(`Unhandled compatibility error: ${String(error)}`);
+}
+
+function legacySetupFailureDescription(cause: unknown): string {
+  if (
+    typeof cause === "object" &&
+    cause !== null &&
+    "message" in cause &&
+    typeof cause.message === "string"
+  ) {
+    return cause.message;
+  }
+  return String(cause);
 }
 
 function projectEntriesFailureContext(error: WorkspaceEntries.WorkspaceEntriesError): {
@@ -280,6 +306,19 @@ function projectFileFailureContext(
       return { failure: "path_not_file", resolvedPath: error.resolvedPath };
     case "WorkspaceBinaryFileError":
       return { failure: "binary_file", resolvedPath: error.resolvedPath };
+    default:
+      return unexpectedCompatibilityError(error);
+  }
+}
+
+function projectSetupScriptCompatibilityDetail(
+  error: ProjectSetupScriptRunner.ProjectSetupScriptRunnerError,
+): string {
+  switch (error._tag) {
+    case "ProjectSetupScriptOperationError":
+      return legacySetupFailureDescription(error.cause);
+    case "ProjectSetupScriptProjectNotFoundError":
+      return "Project was not found for setup script execution.";
     default:
       return unexpectedCompatibilityError(error);
   }
@@ -456,9 +495,23 @@ const makeWsRpcLayer = (
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+
       const crypto = yield* Crypto.Crypto;
+      const sql = yield* SqlClient.SqlClient;
+
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+      /** A reference's host-level link key; the project's own host where the ref names none. */
+      const resolvePullRequestSyncKey = (reference: PullRequestRef) =>
+        reference.host !== undefined && reference.repository.includes("/")
+          ? Effect.succeed(pullRequestSyncKey(reference))
+          : projectionSnapshotQuery.getProjectShellById(reference.projectId).pipe(
+              Effect.map((project) =>
+                pullRequestSyncKey(reference, Option.getOrUndefined(project)?.repositoryIdentity),
+              ),
+              Effect.orElseSucceed(() => null),
+            );
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+      const threadDeletionReactor = yield* ThreadDeletionReactor;
       const threadCommandDispatcher = yield* ThreadCommandDispatcher.ThreadCommandDispatcher;
       const analytics = yield* AnalyticsService.AnalyticsService;
       // Every command dispatched on this connection carries the connecting
@@ -467,6 +520,9 @@ const makeWsRpcLayer = (
       const hasClientOrigin =
         clientOrigin.surface !== undefined || clientOrigin.appVersion !== undefined;
       const dispatchOptions = hasClientOrigin ? { origin: clientOrigin } : undefined;
+      const dispatchFromClient: OrchestrationEngine.OrchestrationEngineShape["dispatch"] = (
+        command,
+      ) => orchestrationEngine.dispatch(command, dispatchOptions);
       const recordClientCommandAnalytics = (command: OrchestrationCommand) => {
         switch (command.type) {
           case "thread.create":
@@ -494,6 +550,7 @@ const makeWsRpcLayer = (
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
       const previewManager = yield* PreviewManager.PreviewManager;
+      const deviceService = yield* DeviceService.DeviceService;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerService = yield* ProviderService.ProviderService;
@@ -506,6 +563,7 @@ const makeWsRpcLayer = (
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const canReplayPersistedRange = Effect.fnUntraced(function* (
@@ -544,7 +602,10 @@ const makeWsRpcLayer = (
         }
         return true;
       });
+
+      const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
+
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -577,6 +638,7 @@ const makeWsRpcLayer = (
       const sourceControlRepositories =
         yield* SourceControlRepositoryService.SourceControlRepositoryService;
       const pullRequests = yield* PullRequestService.PullRequestService;
+      const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
       const sessions = yield* SessionStore.SessionStore;
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
@@ -639,6 +701,64 @@ const makeWsRpcLayer = (
           authorizeEffect(requiredScopeForRpcMethod(method), effect),
           traceAttributes,
         );
+
+      const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
+        isOrchestrationDispatchCommandError(cause)
+          ? cause
+          : new OrchestrationDispatchCommandError({
+              message: cause instanceof Error ? cause.message : fallbackMessage,
+              cause,
+            });
+      const randomUUID = crypto.randomUUIDv4.pipe(
+        Effect.mapError((cause) =>
+          toDispatchCommandError(cause, "Failed to generate orchestration command identifier."),
+        ),
+      );
+      const serverEventId = randomUUID.pipe(Effect.map(EventId.make));
+      const serverCommandId = (tag: string) =>
+        randomUUID.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
+
+      const appendSetupScriptActivity = (input: {
+        readonly threadId: ThreadId;
+        readonly kind: "setup-script.requested" | "setup-script.started" | "setup-script.failed";
+        readonly summary: string;
+        readonly createdAt: string;
+        readonly payload: Record<string, unknown>;
+        readonly tone: "info" | "error";
+      }) =>
+        Effect.all({
+          commandId: serverCommandId("setup-script-activity"),
+          activityId: serverEventId,
+        }).pipe(
+          Effect.flatMap(({ commandId, activityId }) =>
+            dispatchFromClient({
+              type: "thread.activity.append",
+              commandId,
+              threadId: input.threadId,
+              activity: {
+                id: activityId,
+                tone: input.tone,
+                kind: input.kind,
+                summary: input.summary,
+                payload: input.payload,
+                turnId: null,
+                createdAt: input.createdAt,
+              },
+              createdAt: input.createdAt,
+            }),
+          ),
+        );
+
+      const toBootstrapDispatchCommandCauseError = (cause: Cause.Cause<unknown>) => {
+        const error = Cause.squash(cause);
+        return isOrchestrationDispatchCommandError(error)
+          ? error
+          : new OrchestrationDispatchCommandError({
+              message:
+                error instanceof Error ? error.message : "Failed to bootstrap thread turn start.",
+              cause,
+            });
+      };
       const loadAuthAccessSnapshot = () =>
         Effect.all({
           pairingLinks: serverAuth.listPairingLinks(),
@@ -867,6 +987,281 @@ const makeWsRpcLayer = (
           output.push(...(yield* coalesceShellEvents(pendingEvents)));
           return output;
         });
+
+      const dispatchBootstrapTurnStart = (
+        command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
+      ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
+        Effect.gen(function* () {
+          const bootstrap = command.bootstrap;
+          const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
+          let createdThread = false;
+          let targetProjectId = bootstrap?.createThread?.projectId;
+          let targetProjectCwd = bootstrap?.prepareWorktree?.projectCwd;
+          let targetWorktreePath = bootstrap?.createThread?.worktreePath ?? null;
+
+          const cleanupCreatedThread = () =>
+            createdThread
+              ? serverCommandId("bootstrap-thread-delete").pipe(
+                  Effect.flatMap((commandId) =>
+                    dispatchFromClient({
+                      type: "thread.delete",
+                      commandId,
+                      threadId: command.threadId,
+                    }),
+                  ),
+                  Effect.as(true),
+                )
+              : Effect.succeed(false);
+
+          const recordSetupScriptLaunchFailure = (input: {
+            readonly error: ProjectSetupScriptRunner.ProjectSetupScriptRunnerError;
+            readonly requestedAt: string;
+            readonly worktreePath: string;
+          }) => {
+            const detail = projectSetupScriptCompatibilityDetail(input.error);
+            return appendSetupScriptActivity({
+              threadId: command.threadId,
+              kind: "setup-script.failed",
+              summary: "Setup script failed to start",
+              createdAt: input.requestedAt,
+              payload: {
+                detail,
+                worktreePath: input.worktreePath,
+              },
+              tone: "error",
+            }).pipe(
+              Effect.ignoreCause({ log: false }),
+              Effect.flatMap(() =>
+                Effect.logWarning("bootstrap turn start failed to launch setup script", {
+                  threadId: command.threadId,
+                  worktreePath: input.worktreePath,
+                  detail,
+                }),
+              ),
+            );
+          };
+
+          const recordSetupScriptStarted = (input: {
+            readonly requestedAt: string;
+            readonly worktreePath: string;
+            readonly scriptId: string;
+            readonly scriptName: string;
+            readonly terminalId: string;
+          }) =>
+            Effect.gen(function* () {
+              const startedAt = yield* nowIso;
+              const payload = {
+                scriptId: input.scriptId,
+                scriptName: input.scriptName,
+                terminalId: input.terminalId,
+                worktreePath: input.worktreePath,
+              };
+              yield* Effect.all([
+                appendSetupScriptActivity({
+                  threadId: command.threadId,
+                  kind: "setup-script.requested",
+                  summary: "Starting setup script",
+                  createdAt: input.requestedAt,
+                  payload,
+                  tone: "info",
+                }),
+                appendSetupScriptActivity({
+                  threadId: command.threadId,
+                  kind: "setup-script.started",
+                  summary: "Setup script started",
+                  createdAt: startedAt,
+                  payload,
+                  tone: "info",
+                }),
+              ]).pipe(
+                Effect.asVoid,
+                Effect.catch((error) =>
+                  Effect.logWarning(
+                    "bootstrap turn start launched setup script but failed to record setup activity",
+                    {
+                      threadId: command.threadId,
+                      worktreePath: input.worktreePath,
+                      scriptId: input.scriptId,
+                      terminalId: input.terminalId,
+                      detail: error.message,
+                    },
+                  ),
+                ),
+              );
+            });
+
+          const runSetupProgram = () =>
+            Effect.gen(function* () {
+              if (!bootstrap?.runSetupScript || !targetWorktreePath) {
+                return;
+              }
+              const worktreePath = targetWorktreePath;
+              const requestedAt = yield* nowIso;
+              yield* projectSetupScriptRunner
+                .runForThread({
+                  threadId: command.threadId,
+                  ...(targetProjectId ? { projectId: targetProjectId } : {}),
+                  ...(targetProjectCwd ? { projectCwd: targetProjectCwd } : {}),
+                  worktreePath,
+                })
+                .pipe(
+                  Effect.matchEffect({
+                    onFailure: (error) =>
+                      recordSetupScriptLaunchFailure({
+                        error,
+                        requestedAt,
+                        worktreePath,
+                      }),
+                    onSuccess: (setupResult) => {
+                      if (setupResult.status !== "started") {
+                        return Effect.void;
+                      }
+                      return recordSetupScriptStarted({
+                        requestedAt,
+                        worktreePath,
+                        scriptId: setupResult.scriptId,
+                        scriptName: setupResult.scriptName,
+                        terminalId: setupResult.terminalId,
+                      });
+                    },
+                  }),
+                );
+            });
+
+          const bootstrapProgram = Effect.gen(function* () {
+            if (bootstrap?.createThread) {
+              const created = yield* dispatchFromClient({
+                type: "thread.create",
+                commandId: yield* serverCommandId("bootstrap-thread-create"),
+                threadId: command.threadId,
+                projectId: bootstrap.createThread.projectId,
+                title: bootstrap.createThread.title,
+                modelSelection: bootstrap.createThread.modelSelection,
+                runtimeMode: bootstrap.createThread.runtimeMode,
+                interactionMode: bootstrap.createThread.interactionMode,
+                branch: bootstrap.createThread.branch,
+                worktreePath: bootstrap.createThread.worktreePath,
+                createdAt: bootstrap.createThread.createdAt,
+              });
+              // The successful create is a fence in the engine command queue:
+              // every delete for the prior incarnation committed before it.
+              // Drain through that event before setup or turn start can own
+              // terminals and provider sessions under the reused thread id.
+              yield* threadDeletionReactor.drainThrough(created.sequence);
+              createdThread = true;
+            }
+
+            if (bootstrap?.prepareWorktree) {
+              let worktreeBaseRef = bootstrap.prepareWorktree.baseBranch;
+              // "Start from origin" is a stored default; repos without the
+              // requested remote branch fall back to the local base branch.
+              const startFromOrigin =
+                bootstrap.prepareWorktree.startFromOrigin === true &&
+                (yield* gitWorkflow.remoteExists({
+                  cwd: bootstrap.prepareWorktree.projectCwd,
+                  remoteName: "origin",
+                }));
+              if (startFromOrigin) {
+                yield* gitWorkflow.fetchRemote({
+                  cwd: bootstrap.prepareWorktree.projectCwd,
+                  remoteName: "origin",
+                });
+                const remoteBaseExists = yield* gitWorkflow.remoteBranchExists({
+                  cwd: bootstrap.prepareWorktree.projectCwd,
+                  refName: bootstrap.prepareWorktree.baseBranch,
+                  remoteName: "origin",
+                });
+                if (remoteBaseExists) {
+                  const resolvedRemoteBase = yield* gitWorkflow.resolveRemoteTrackingCommit({
+                    cwd: bootstrap.prepareWorktree.projectCwd,
+                    refName: bootstrap.prepareWorktree.baseBranch,
+                    fallbackRemoteName: "origin",
+                  });
+                  worktreeBaseRef = resolvedRemoteBase.commitSha;
+                }
+              }
+              const worktree = yield* gitWorkflow.createWorktree({
+                cwd: bootstrap.prepareWorktree.projectCwd,
+                refName: worktreeBaseRef,
+                newRefName: bootstrap.prepareWorktree.branch,
+                baseRefName: bootstrap.prepareWorktree.baseBranch,
+                path: null,
+              });
+              targetWorktreePath = worktree.worktree.path;
+              yield* dispatchFromClient({
+                type: "thread.meta.update",
+                commandId: yield* serverCommandId("bootstrap-thread-meta-update"),
+                threadId: command.threadId,
+                branch: worktree.worktree.refName,
+                worktreePath: targetWorktreePath,
+              });
+              yield* refreshGitStatus(targetWorktreePath);
+            }
+
+            yield* runSetupProgram();
+
+            return yield* dispatchFromClient(finalTurnStartCommand);
+          });
+
+          return yield* bootstrapProgram.pipe(
+            Effect.catchCause((cause) => {
+              const dispatchError = toBootstrapDispatchCommandCauseError(cause);
+              if (Cause.hasInterruptsOnly(cause)) {
+                return Effect.fail(dispatchError);
+              }
+              return Effect.uninterruptible(cleanupCreatedThread()).pipe(
+                Effect.matchCauseEffect({
+                  onFailure: (cleanupCause) =>
+                    Effect.logWarning("bootstrap thread cleanup failed", {
+                      threadId: command.threadId,
+                      detail: Cause.pretty(cleanupCause),
+                    }).pipe(Effect.flatMap(() => Effect.fail(dispatchError))),
+                  onSuccess: (threadDeleted) =>
+                    Effect.fail(
+                      threadDeleted
+                        ? new OrchestrationDispatchCommandError({
+                            message: dispatchError.message,
+                            ...(dispatchError.cause !== undefined
+                              ? { cause: dispatchError.cause }
+                              : {}),
+                            bootstrapThreadDisposition: "deleted",
+                          })
+                        : dispatchError,
+                    ),
+                }),
+              );
+            }),
+          );
+        });
+
+      const dispatchNormalizedCommand = (
+        normalizedCommand: OrchestrationCommand,
+      ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
+        const dispatchEffect =
+          normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
+            ? dispatchBootstrapTurnStart(normalizedCommand)
+            : dispatchFromClient(normalizedCommand).pipe(
+                Effect.tap(({ sequence }) =>
+                  // Returning from thread.create is the handoff point at which
+                  // clients may start resources for the new incarnation. Use
+                  // its event sequence as the exact deletion-cleanup fence.
+                  normalizedCommand.type === "thread.create"
+                    ? threadDeletionReactor.drainThrough(sequence)
+                    : Effect.void,
+                ),
+                Effect.mapError((cause) =>
+                  toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+                ),
+              );
+
+        return startup
+          .enqueueCommand(dispatchEffect)
+          .pipe(
+            Effect.mapError((cause) =>
+              toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+            ),
+          );
+      };
 
       // Only clients that answer /usage-limits themselves see it in the catalogs;
       // an older client would send the injected command to the provider.
@@ -1419,9 +1814,7 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.serverGetConfig,
             loadServerConfig({ usageLimitsCommand: false }),
-            {
-              "rpc.aggregate": "server",
-            },
+            { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverGetZrokShareStatus]: (_input) =>
           observeRpcEffect(WS_METHODS.serverGetZrokShareStatus, zrokShare.getStatus, {
@@ -1796,6 +2189,24 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.pullRequestsSummary, pullRequests.summary(input), {
             "rpc.aggregate": "pull-requests",
           }),
+        [WS_METHODS.pullRequestsStack]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsStack, pullRequests.stack(input), {
+            "rpc.aggregate": "pull-requests",
+          }),
+        [WS_METHODS.pullRequestsLinkedThreads]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestsLinkedThreads,
+            resolvePullRequestSyncKey(input).pipe(
+              Effect.flatMap((key) =>
+                key === null
+                  ? Effect.succeed({ threads: [] })
+                  : listLinkedPullRequestThreads(key).pipe(
+                      Effect.provideService(SqlClient.SqlClient, sql),
+                    ),
+              ),
+            ),
+            { "rpc.aggregate": "pull-requests" },
+          ),
         [WS_METHODS.pullRequestsDetail]: (input) =>
           observeRpcEffect(WS_METHODS.pullRequestsDetail, pullRequests.detail(input), {
             "rpc.aggregate": "pull-requests",
@@ -1819,9 +2230,21 @@ const makeWsRpcLayer = (
             { "rpc.aggregate": "pull-requests" },
           ),
         [WS_METHODS.pullRequestsRunAction]: (input) =>
-          observeRpcEffect(WS_METHODS.pullRequestsRunAction, pullRequests.runAction(input), {
-            "rpc.aggregate": "pull-requests",
-          }),
+          observeRpcEffect(
+            WS_METHODS.pullRequestsRunAction,
+            pullRequests
+              .runAction(input)
+              .pipe(
+                Effect.tap(() =>
+                  resolvePullRequestSyncKey(input).pipe(
+                    Effect.flatMap((key) =>
+                      key === null ? Effect.void : pullRequestSync.requestSync(key),
+                    ),
+                  ),
+                ),
+              ),
+            { "rpc.aggregate": "pull-requests" },
+          ),
         [WS_METHODS.pullRequestsUpdate]: (input) =>
           observeRpcEffect(WS_METHODS.pullRequestsUpdate, pullRequests.update(input), {
             "rpc.aggregate": "pull-requests",
@@ -1859,9 +2282,23 @@ const makeWsRpcLayer = (
             "rpc.aggregate": "pull-requests",
           }),
         [WS_METHODS.pullRequestsInvalidate]: (input) =>
-          observeRpcEffect(WS_METHODS.pullRequestsInvalidate, pullRequests.invalidate(input), {
-            "rpc.aggregate": "pull-requests",
-          }),
+          observeRpcEffect(
+            WS_METHODS.pullRequestsInvalidate,
+            pullRequests.invalidate(input).pipe(
+              // A reader asking for fresh host state also wants the thread badges it feeds to
+              // catch up, including a merged link the sweep would otherwise never revisit.
+              Effect.andThen(
+                input.reference === undefined
+                  ? Effect.void
+                  : resolvePullRequestSyncKey(input.reference).pipe(
+                      Effect.flatMap((key) =>
+                        key === null ? Effect.void : pullRequestSync.requestSync(key),
+                      ),
+                    ),
+              ),
+            ),
+            { "rpc.aggregate": "pull-requests" },
+          ),
         [WS_METHODS.pullRequestsSubscribeRefreshes]: () =>
           observeRpcStream(
             WS_METHODS.pullRequestsSubscribeRefreshes,
@@ -2063,6 +2500,14 @@ const makeWsRpcLayer = (
               ) {
                 return yield* issueAssetUrl({ resource: input.resource });
               }
+              if (input.resource._tag === "draft-workspace-file") {
+                // A project draft names its workspace directly; there is no
+                // thread to resolve one from.
+                return yield* issueAssetUrl({
+                  resource: input.resource,
+                  workspaceRoot: input.resource.cwd,
+                });
+              }
               if (input.resource._tag === "project-favicon") {
                 const project = yield* projectionSnapshotQuery
                   .getActiveProjectByWorkspaceRoot(input.resource.cwd)
@@ -2170,8 +2615,25 @@ const makeWsRpcLayer = (
                 .pipe(
                   Effect.matchCauseEffect({
                     onFailure: (cause) => Queue.failCause(queue, cause),
-                    onSuccess: () =>
-                      refreshGitStatus(input.cwd).pipe(
+                    onSuccess: (result) =>
+                      (input.threadId === undefined
+                        ? Effect.void
+                        : linkCreatedPullRequest({
+                            threadId: input.threadId,
+                            result,
+                            commandId: serverCommandId("pr-created-link"),
+                          }).pipe(
+                            Effect.provideService(
+                              OrchestrationEngine.OrchestrationEngineService,
+                              orchestrationEngine,
+                            ),
+                            Effect.provideService(
+                              ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+                              projectionSnapshotQuery,
+                            ),
+                          )
+                      ).pipe(
+                        Effect.andThen(refreshGitStatus(input.cwd)),
                         Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
                       ),
                   }),
@@ -2390,6 +2852,44 @@ const makeWsRpcLayer = (
           observeRpcStream(WS_METHODS.subscribePreviewEvents, previewManager.events, {
             "rpc.aggregate": "preview",
           }),
+        [WS_METHODS.deviceConfigure]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceConfigure, deviceService.configure(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceTestHost]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceTestHost, deviceService.testHost(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceList]: (_input) =>
+          observeRpcEffect(WS_METHODS.deviceList, deviceService.list, {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceOpen]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceOpen, deviceService.open(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceClose]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceClose, deviceService.close(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceShutdown]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceShutdown, deviceService.shutdown(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceDetail]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceDetail, deviceService.detail(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceAction]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceAction, deviceService.action(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.subscribeDeviceState]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeDeviceState,
+            DeviceService.stateStream(deviceService),
+            { "rpc.aggregate": "device" },
+          ),
         [WS_METHODS.subscribeDiscoveredLocalServers]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeDiscoveredLocalServers,
@@ -2637,6 +3137,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         ),
     });
     const pullRequests = yield* PullRequestService.PullRequestService;
+    const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -2671,6 +3172,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               previewAutomationBroker,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
+              Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
               Layer.provide(AgentSessionScanner.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),

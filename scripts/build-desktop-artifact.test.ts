@@ -22,12 +22,10 @@ import {
   DesktopDmgBackgroundSourceMissingError,
   createStageWorkspaceConfig,
   createStagePatchedDependencies,
-  pinPatchedDependencyVersions,
   createBuildConfig,
   DESKTOP_ELECTRON_LANGUAGES,
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
-  DESKTOP_TRAY_TEMPLATE_FILES,
   LINUX_CAPTURE_EXTRA_RESOURCES,
   LINUX_BROWSER_SECRET_EXTRA_RESOURCES,
   MAC_FILE_EXCLUSIONS,
@@ -427,25 +425,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     );
   });
 
-  it("pins staged dependency ranges to the versions covered by patches", () => {
-    assert.deepStrictEqual(
-      pinPatchedDependencyVersions(
-        {
-          "@anthropic-ai/claude-agent-sdk": "^0.3.170",
-          effect: "4.0.0-beta.73",
-        },
-        {
-          "@anthropic-ai/claude-agent-sdk@0.3.170":
-            "patches/@anthropic-ai__claude-agent-sdk@0.3.170.patch",
-        },
-      ),
-      {
-        "@anthropic-ai/claude-agent-sdk": "0.3.170",
-        effect: "4.0.0-beta.73",
-      },
-    );
-  });
-
   it("installs optional native dependencies for the target desktop architecture", () => {
     assert.deepStrictEqual(STAGE_INSTALL_ARGS, ["install", "--prod"]);
     assert.deepStrictEqual(createStageWorkspaceConfig({ platform: "mac", arch: "x64" }), {
@@ -598,10 +577,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         to: ".",
         filter: ["server.asar", "server.asar.unpacked/**/*"],
       },
-    ]);
-    assert.deepStrictEqual(DESKTOP_TRAY_TEMPLATE_FILES, [
-      "trayTemplate.png",
-      "trayTemplate@2x.png",
     ]);
   });
 
@@ -1200,10 +1175,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.isBelow(result.fileCount, WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT);
         assert.deepStrictEqual(secondAsar, firstAsar);
       }),
-    ).pipe(
-      Effect.provideService(HostProcessArchitecture, "arm64"),
-      Effect.provideService(HostProcessPlatform, "linux"),
-    ),
+    ).pipe(Effect.provideService(HostProcessPlatform, "linux")),
   );
 
   it.effect("validates the emitted WSL archive and its SHA-256 sidecar", () =>
@@ -1335,9 +1307,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.equal(primaryProbe.options.env?.NODE_PATH, "");
       }),
     ).pipe(
-      Effect.provide(spawnerLayer),
-      Effect.provideService(HostProcessPlatform, "win32"),
-      Effect.provideService(HostProcessArchitecture, "x64"),
+      Effect.provide(
+        Layer.mergeAll(
+          spawnerLayer,
+          Layer.succeed(HostProcessPlatform, "win32"),
+          Layer.succeed(HostProcessArchitecture, "x64"),
+        ),
+      ),
     );
   });
 
@@ -1445,11 +1421,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         });
 
         assert.isFalse(
-          commands.some(
-            (command) =>
-              command.command !== process.execPath &&
-              command.options.env?.ELECTRON_RUN_AS_NODE === "1",
-          ),
+          commands.some((command) => command.options.env?.ELECTRON_RUN_AS_NODE === "1"),
         );
         assert.isTrue(
           commands.some(
@@ -1459,9 +1431,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         );
       }),
     ).pipe(
-      Effect.provide(spawnerLayer),
-      Effect.provideService(HostProcessPlatform, "win32"),
-      Effect.provideService(HostProcessArchitecture, "x64"),
+      Effect.provide(
+        Layer.mergeAll(
+          spawnerLayer,
+          Layer.succeed(HostProcessPlatform, "win32"),
+          Layer.succeed(HostProcessArchitecture, "x64"),
+        ),
+      ),
     );
   });
 
@@ -1593,10 +1569,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.instanceOf(error, BundleNotSelfContainedError);
         assert.include(error.output, "t3code-deliberately-missing-package");
       }),
-    ).pipe(
-      Effect.provideService(HostProcessArchitecture, "arm64"),
-      Effect.provideService(HostProcessPlatform, "linux"),
-    ),
+    ).pipe(Effect.provideService(HostProcessPlatform, "linux")),
   );
 
   it.effect("preserves both Linux icon resize failures with structural context", () => {

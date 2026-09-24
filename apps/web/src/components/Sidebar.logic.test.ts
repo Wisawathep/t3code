@@ -16,7 +16,6 @@ import {
   resolveAdjacentThreadId,
   reduceSidebarProjectScopeMenuState,
   getFallbackThreadIdAfterDelete,
-  getOtherSplitViewThreads,
   getProjectSortTimestamp,
   hasUnseenCompletion,
   isContextMenuPointerDown,
@@ -24,17 +23,11 @@ import {
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   resolveProjectStatusIndicator,
-  resolveSidebarNewThreadSeedContext,
-  resolveSidebarNewThreadEnvMode,
-  resolveSidebarSplitViewThreadState,
-  resolveSplitViewGroupRowStyle,
-  resolveSidebarThreadNavigation,
-  resolveSplitViewDetachNavigationTarget,
   resolveThreadRowClassName,
   resolveSidebarThreadStatus,
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
-  searchSidebarThreadsByTitle,
+  searchSidebarThreads,
   formatWorkingDurationLabel,
   shouldClearThreadSelectionOnMouseDown,
   shouldRecedeSidebarThread,
@@ -72,7 +65,6 @@ import {
   type SidebarThreadSummary,
   type Thread,
 } from "../types";
-import { splitViewGroupChroma } from "../splitViewStore";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 
@@ -403,6 +395,18 @@ describe("shouldRecedeSidebarThread", () => {
     expect(shouldRecedeSidebarThread({ ...input, isActive: true })).toBe(false);
     expect(shouldRecedeSidebarThread({ ...input, isSelected: true })).toBe(false);
   });
+
+  it.each([false, true])("keeps input-required threads prominent with unread=%s", (isUnread) => {
+    expect(
+      shouldRecedeSidebarThread({
+        status: "input",
+        isUnread,
+        isWoke: false,
+        isActive: false,
+        isSelected: false,
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("createThreadJumpHintVisibilityController", () => {
@@ -524,185 +528,6 @@ describe("isTrailingDoubleClick", () => {
 
   it("ignores further clicks of a triple-click", () => {
     expect(isTrailingDoubleClick(3)).toBe(true);
-  });
-});
-
-describe("split-view sidebar logic", () => {
-  it("distinguishes displayed panes from the active pane", () => {
-    expect(
-      resolveSidebarSplitViewThreadState({
-        isSplitViewActive: true,
-        paneThreadKeys: ["thread-a", "thread-b"],
-        activeThreadKey: "thread-b",
-        threadKey: "thread-a",
-      }),
-    ).toEqual({ isDisplayedPane: true, isActivePane: false });
-    expect(
-      resolveSidebarSplitViewThreadState({
-        isSplitViewActive: true,
-        paneThreadKeys: ["thread-a", "thread-b"],
-        activeThreadKey: "thread-b",
-        threadKey: "thread-b",
-      }),
-    ).toEqual({ isDisplayedPane: true, isActivePane: true });
-  });
-
-  it("only treats panes as displayed while split view is active", () => {
-    expect(
-      resolveSidebarSplitViewThreadState({
-        isSplitViewActive: false,
-        paneThreadKeys: ["thread-a"],
-        activeThreadKey: "thread-a",
-        threadKey: "thread-a",
-      }),
-    ).toEqual({ isDisplayedPane: false, isActivePane: false });
-  });
-
-  it("replace-navigates when activating a displayed pane and otherwise exits split view", () => {
-    expect(
-      resolveSidebarThreadNavigation({
-        isSplitViewActive: true,
-        paneThreadKeys: ["thread-a", "thread-b"],
-        threadKey: "thread-b",
-      }),
-    ).toEqual({ activatePane: true, clearSplit: false, replace: true });
-    expect(
-      resolveSidebarThreadNavigation({
-        isSplitViewActive: true,
-        paneThreadKeys: ["thread-a", "thread-b"],
-        threadKey: "thread-c",
-      }),
-    ).toEqual({ activatePane: false, clearSplit: true, replace: false });
-  });
-
-  it("navigates from an active detached pane to the store fallback", () => {
-    expect(
-      resolveSplitViewDetachNavigationTarget({
-        wasActive: true,
-        detachFallback: "thread-a",
-        activePane: "thread-b",
-      }),
-    ).toBe("thread-a");
-    expect(
-      resolveSplitViewDetachNavigationTarget({
-        wasActive: true,
-        detachFallback: null,
-        activePane: "thread-b",
-      }),
-    ).toBe("thread-b");
-    expect(
-      resolveSplitViewDetachNavigationTarget({
-        wasActive: false,
-        detachFallback: "thread-a",
-        activePane: "thread-b",
-      }),
-    ).toBeNull();
-  });
-});
-
-describe("resolveSidebarNewThreadEnvMode", () => {
-  it("uses the app default when the caller does not request a specific mode", () => {
-    expect(
-      resolveSidebarNewThreadEnvMode({
-        defaultEnvMode: "worktree",
-      }),
-    ).toBe("worktree");
-  });
-
-  it("preserves an explicit requested mode over the app default", () => {
-    expect(
-      resolveSidebarNewThreadEnvMode({
-        requestedEnvMode: "local",
-        defaultEnvMode: "worktree",
-      }),
-    ).toBe("local");
-  });
-});
-
-describe("resolveSidebarNewThreadSeedContext", () => {
-  it("prefers the default worktree mode over active thread context", () => {
-    expect(
-      resolveSidebarNewThreadSeedContext({
-        projectId: "project-1",
-        defaultEnvMode: "worktree",
-        activeThread: {
-          projectId: "project-1",
-          branch: "feature/existing",
-          worktreePath: "/repo/.t3/worktrees/existing",
-        },
-        activeDraftThread: {
-          projectId: "project-1",
-          branch: "feature/draft",
-          worktreePath: "/repo/.t3/worktrees/draft",
-          envMode: "worktree",
-          startFromOrigin: true,
-        },
-      }),
-    ).toEqual({
-      envMode: "worktree",
-    });
-  });
-
-  it("inherits the active server thread context when creating a new thread in the same project", () => {
-    expect(
-      resolveSidebarNewThreadSeedContext({
-        projectId: "project-1",
-        defaultEnvMode: "local",
-        activeThread: {
-          projectId: "project-1",
-          branch: "effect-atom",
-          worktreePath: null,
-        },
-        activeDraftThread: null,
-      }),
-    ).toEqual({
-      branch: "effect-atom",
-      worktreePath: null,
-      envMode: "local",
-    });
-  });
-
-  it("prefers the active draft thread context when it matches the target project", () => {
-    expect(
-      resolveSidebarNewThreadSeedContext({
-        projectId: "project-1",
-        defaultEnvMode: "local",
-        activeThread: {
-          projectId: "project-1",
-          branch: "effect-atom",
-          worktreePath: null,
-        },
-        activeDraftThread: {
-          projectId: "project-1",
-          branch: "feature/new-draft",
-          worktreePath: "/repo/worktree",
-          envMode: "worktree",
-          startFromOrigin: true,
-        },
-      }),
-    ).toEqual({
-      branch: "feature/new-draft",
-      worktreePath: "/repo/worktree",
-      envMode: "worktree",
-      startFromOrigin: true,
-    });
-  });
-
-  it("falls back to the default env mode when there is no matching active thread context", () => {
-    expect(
-      resolveSidebarNewThreadSeedContext({
-        projectId: "project-2",
-        defaultEnvMode: "worktree",
-        activeThread: {
-          projectId: "project-1",
-          branch: "effect-atom",
-          worktreePath: null,
-        },
-        activeDraftThread: null,
-      }),
-    ).toEqual({
-      envMode: "worktree",
-    });
   });
 });
 
@@ -989,7 +814,7 @@ describe("resolveSidebarThreadStatus", () => {
   });
 });
 
-describe("searchSidebarThreadsByTitle", () => {
+describe("searchSidebarThreads", () => {
   const threads = [
     { id: "thread-1", title: "Fix workspace search", project: "Alpha" },
     { id: "thread-2", title: "Review providers", project: "Workspace" },
@@ -997,15 +822,15 @@ describe("searchSidebarThreadsByTitle", () => {
   ];
 
   it("matches thread titles case-insensitively and preserves their order", () => {
-    expect(searchSidebarThreadsByTitle(threads, "work")).toEqual([threads[0], threads[2]]);
+    expect(searchSidebarThreads(threads, "work")).toEqual([threads[0], threads[2]]);
   });
 
   it("does not match project metadata", () => {
-    expect(searchSidebarThreadsByTitle(threads, "workspace")).toEqual([threads[0]]);
+    expect(searchSidebarThreads(threads, "workspace")).toEqual([threads[0]]);
   });
 
   it("returns no results for an empty query", () => {
-    expect(searchSidebarThreadsByTitle(threads, "   ")).toEqual([]);
+    expect(searchSidebarThreads(threads, "   ")).toEqual([]);
   });
 });
 
@@ -1015,30 +840,26 @@ describe("filterSidebarProjectScopeItems", () => {
     { value: "alpha", label: "Alpha workspace" },
     { value: "beta", label: "Beta tools" },
   ] as const;
-  const filter = (activeScopeKey: string | null, query: string) =>
+  const filter = (query: string) =>
     filterSidebarProjectScopeItems({
       items,
-      activeScopeKey,
       query,
       matches: (item, candidate) =>
         item.label.toLocaleLowerCase().includes(candidate.toLocaleLowerCase()),
     });
 
-  it("omits the reset row when the sidebar is already unscoped", () => {
-    expect(filter(null, "")).toEqual(items.slice(1));
+  it("shows the default row first while the query is empty", () => {
+    expect(filter("")).toEqual(items);
+    expect(filter("   ")).toEqual(items);
   });
 
-  it("shows the reset row first while a project scope is active", () => {
-    expect(filter("alpha", "")).toEqual(items);
-  });
-
-  it("hides the reset row while filtering an active scope", () => {
-    expect(filter("alpha", "all")).toEqual([]);
+  it("hides the default row while filtering", () => {
+    expect(filter("all")).toEqual([]);
   });
 
   it("returns matching projects in source order and supports no-match results", () => {
-    expect(filter(null, "WORK")).toEqual([items[1]]);
-    expect(filter(null, "missing")).toEqual([]);
+    expect(filter("WORK")).toEqual([items[1]]);
+    expect(filter("missing")).toEqual([]);
   });
 });
 
@@ -1073,55 +894,12 @@ describe("reduceSidebarProjectScopeMenuState", () => {
 });
 
 describe("sortThreadsForSidebar", () => {
-  const sortable = (input: {
-    id: string;
-    createdAt: string;
-    updatedAt?: string;
-    latestUserMessageAt?: string | null;
-    environmentId?: EnvironmentId;
-  }) => ({
-    environmentId: input.environmentId ?? localEnvironmentId,
+  const sortable = (input: { id: string; createdAt: string }) => ({
     id: input.id,
     createdAt: input.createdAt,
-    updatedAt: input.updatedAt ?? input.createdAt,
-    latestUserMessageAt: input.latestUserMessageAt ?? null,
   });
 
-  it("moves an older active thread above newer threads after a new user message", () => {
-    const sorted = sortThreadsForSidebar([
-      sortable({
-        id: "newer-thread",
-        createdAt: "2026-03-09T12:00:00.000Z",
-        updatedAt: "2026-03-09T12:00:00.000Z",
-      }),
-      sortable({
-        id: "recently-messaged",
-        createdAt: "2026-03-09T08:00:00.000Z",
-        updatedAt: "2026-03-09T13:00:00.000Z",
-        latestUserMessageAt: "2026-03-09T13:00:00.000Z",
-      }),
-    ]);
-
-    expect(sorted.map((thread) => thread.id)).toEqual(["recently-messaged", "newer-thread"]);
-  });
-
-  it("does not move a thread after a non-message update", () => {
-    const sorted = sortThreadsForSidebar([
-      sortable({
-        id: "newer-thread",
-        createdAt: "2026-03-09T12:00:00.000Z",
-      }),
-      sortable({
-        id: "recently-updated",
-        createdAt: "2026-03-09T08:00:00.000Z",
-        updatedAt: "2026-03-09T13:00:00.000Z",
-      }),
-    ]);
-
-    expect(sorted.map((thread) => thread.id)).toEqual(["newer-thread", "recently-updated"]);
-  });
-
-  it("falls back to creation time when modification matches creation", () => {
+  it("orders by creation time, newest first, ignoring activity", () => {
     const sorted = sortThreadsForSidebar([
       sortable({ id: "oldest", createdAt: "2026-03-09T08:00:00.000Z" }),
       sortable({ id: "newest", createdAt: "2026-03-09T12:00:00.000Z" }),
@@ -1131,7 +909,7 @@ describe("sortThreadsForSidebar", () => {
     expect(sorted.map((thread) => thread.id)).toEqual(["newest", "middle", "oldest"]);
   });
 
-  it("breaks modification-time ties by id so the order is stable", () => {
+  it("breaks creation-time ties by id so the order is stable", () => {
     const sorted = sortThreadsForSidebar([
       sortable({ id: "b", createdAt: "2026-03-09T10:00:00.000Z" }),
       sortable({ id: "a", createdAt: "2026-03-09T10:00:00.000Z" }),
@@ -1140,33 +918,11 @@ describe("sortThreadsForSidebar", () => {
     expect(sorted.map((thread) => thread.id)).toEqual(["a", "b"]);
   });
 
-  it("breaks equal cross-environment identities deterministically", () => {
-    const sorted = sortThreadsForSidebar([
-      sortable({
-        environmentId: EnvironmentId.make("environment-b"),
-        id: "shared-thread",
-        createdAt: "2026-03-09T10:00:00.000Z",
-      }),
-      sortable({
-        environmentId: EnvironmentId.make("environment-a"),
-        id: "shared-thread",
-        createdAt: "2026-03-09T10:00:00.000Z",
-      }),
-    ]);
-
-    expect(sorted.map((thread) => thread.environmentId)).toEqual([
-      EnvironmentId.make("environment-a"),
-      EnvironmentId.make("environment-b"),
-    ]);
-  });
-
   it("surfaces an un-settled thread at the top via its re-entry stamp", () => {
     const sorted = sortThreadsForSidebar([
       {
-        environmentId: localEnvironmentId,
         id: "old-unsettled",
         createdAt: "2026-03-09T08:00:00.000Z",
-        updatedAt: "2026-03-09T08:00:00.000Z",
         unsettledAt: "2026-03-09T13:00:00.000Z",
       },
       sortable({ id: "newest", createdAt: "2026-03-09T12:00:00.000Z" }),
@@ -1179,10 +935,8 @@ describe("sortThreadsForSidebar", () => {
   it("ignores a re-entry stamp older than the thread's creation", () => {
     const sorted = sortThreadsForSidebar([
       {
-        environmentId: localEnvironmentId,
         id: "stale-stamp",
         createdAt: "2026-03-09T10:00:00.000Z",
-        updatedAt: "2026-03-09T10:00:00.000Z",
         unsettledAt: "2026-03-09T09:00:00.000Z",
       },
       sortable({ id: "newest", createdAt: "2026-03-09T12:00:00.000Z" }),
@@ -2289,58 +2043,6 @@ describe("resolveThreadRowClassName", () => {
     expect(className).toContain("bg-sidebar-row-active");
     expect(className).toContain("hover:bg-sidebar-row-active");
   });
-
-  it("uses a subdued accent palette for a non-active split pane", () => {
-    const className = resolveThreadRowClassName({
-      isActive: false,
-      isSelected: false,
-      isSplitPane: true,
-    });
-    expect(className).toContain("bg-accent/50");
-    expect(className).not.toContain("bg-accent/85");
-  });
-
-  it("keeps bulk selection styling ahead of split-pane styling", () => {
-    const className = resolveThreadRowClassName({
-      isActive: false,
-      isSelected: true,
-      isSplitPane: true,
-    });
-    expect(className).toContain("bg-sidebar-row-selected");
-    expect(className).not.toContain("bg-accent/50");
-  });
-});
-
-describe("resolveSplitViewGroupRowStyle", () => {
-  it("hands the stylesheet the group hue and its chroma, not a finished color", () => {
-    // Light and dark compose their own lightness and strength around these, so
-    // emitting a resolved color here would pin both themes to one tint.
-    const style = resolveSplitViewGroupRowStyle(264) as Record<string, string>;
-
-    expect(style["--split-view-group-hue"]).toBe("264");
-    expect(style["--split-view-group-chroma"]).toBe(String(splitViewGroupChroma(264)));
-    expect(style.backgroundImage).toBeUndefined();
-  });
-});
-
-describe("getOtherSplitViewThreads", () => {
-  it("lists the other titled panes in their split-view order", () => {
-    expect(
-      getOtherSplitViewThreads({
-        paneThreadKeys: ["thread-a", "thread-b", "missing-thread", "thread-c"],
-        threadKey: "thread-b",
-        threadTitleByKey: new Map([
-          ["thread-a", "Plan migration"],
-          ["thread-b", "Implement sidebar"],
-          ["thread-c", "Verify UI"],
-        ]),
-      }),
-    ).toEqual([
-      { threadKey: "thread-a", title: "Plan migration" },
-      { threadKey: "missing-thread", title: "New thread" },
-      { threadKey: "thread-c", title: "Verify UI" },
-    ]);
-  });
 });
 
 describe("resolveProjectStatusIndicator", () => {
@@ -2439,20 +2141,9 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     branch: null,
     worktreePath: null,
     checkpoints: [],
+    pullRequests: [],
     activities: [],
     ...overrides,
-  };
-}
-
-function makeUserMessage(id: string, createdAt: string): Thread["messages"][number] {
-  return {
-    id: id as never,
-    role: "user",
-    text: "Message",
-    turnId: null,
-    createdAt,
-    updatedAt: createdAt,
-    streaming: false,
   };
 }
 
@@ -2653,7 +2344,6 @@ describe("sortProjectsForSidebar", () => {
           id: ThreadId.make("thread-visible"),
           projectId: ProjectId.make("project-1"),
           updatedAt: "2026-03-09T10:02:00.000Z",
-          messages: [makeUserMessage("message-visible", "2026-03-09T10:02:00.000Z")],
           archivedAt: null,
         }),
         makeThread({
@@ -2704,13 +2394,11 @@ describe("sortScopedProjectsForSidebar", () => {
         environmentId: localEnvironmentId,
         projectId: sharedProjectId,
         updatedAt: "2026-03-09T10:02:00.000Z",
-        messages: [makeUserMessage("message-local", "2026-03-09T10:02:00.000Z")],
       }),
       makeThread({
         environmentId: remoteEnvironmentId,
         projectId: sharedProjectId,
         updatedAt: "2026-03-09T10:10:00.000Z",
-        messages: [makeUserMessage("message-remote", "2026-03-09T10:10:00.000Z")],
       }),
     ];
 
@@ -2737,7 +2425,6 @@ describe("sortScopedProjectsForSidebar", () => {
         id: ThreadId.make("thread-visible"),
         projectId: ProjectId.make("project-visible"),
         updatedAt: "2026-03-09T10:02:00.000Z",
-        messages: [makeUserMessage("message-visible", "2026-03-09T10:02:00.000Z")],
       }),
       makeThread({
         id: ThreadId.make("thread-archived"),

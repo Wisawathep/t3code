@@ -432,17 +432,27 @@ export function useThreadActions() {
           (fallbackThreadId
             ? readThreadShell(scopeThreadRef(threadRef.environmentId, fallbackThreadId))
             : null);
-        await navigateAfterThreadDeletion(() =>
-          fallbackThread
-            ? router.navigate({
-                to: "/$environmentId/$threadId",
-                params: buildThreadRouteParams(
-                  scopeThreadRef(fallbackThread.environmentId, fallbackThread.id),
-                ),
-                replace: true,
-              })
-            : router.navigate({ to: "/", replace: true }),
-        );
+        if (fallbackThread) {
+          const navigationResult = await settlePromise(() =>
+            router.navigate({
+              to: "/$environmentId/$threadId",
+              params: buildThreadRouteParams(
+                scopeThreadRef(fallbackThread.environmentId, fallbackThread.id),
+              ),
+              replace: true,
+            }),
+          );
+          if (navigationResult._tag === "Failure") {
+            return navigationResult;
+          }
+        } else {
+          const navigationResult = await settlePromise(() =>
+            router.navigate({ to: "/", replace: true }),
+          );
+          if (navigationResult._tag === "Failure") {
+            return navigationResult;
+          }
+        }
       }
 
       if (!shouldDeleteWorktree || !orphanedWorktreePath || !threadProject) {

@@ -13,8 +13,6 @@ import {
   createMessageAttachmentPreviewProjector,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
-  deriveSubagentTranscriptIds,
-  deriveSubagentRuns,
   deriveTimelineEntries,
   deriveTimelineEntriesWithState,
   deriveWorkLogEntries,
@@ -27,15 +25,6 @@ import {
 } from "./session-logic";
 
 let nextActivityId = 0;
-
-it("derives transcript actions from persisted child-scoped rows", () => {
-  const ids = deriveSubagentTranscriptIds(
-    [{ subagentId: "native-child-message" }, {}],
-    [{ subagentId: "native-child-activity" }, {}],
-  );
-
-  expect([...ids].toSorted()).toEqual(["native-child-activity", "native-child-message"]);
-});
 
 function makeActivity(overrides: {
   id?: string;
@@ -73,6 +62,33 @@ function makeActivity(overrides: {
 }
 
 describe("deriveActivePlanState", () => {
+  it("orders plan snapshots by sequence while ignoring unrelated activities", () => {
+    const activities = Object.freeze([
+      makeActivity({
+        id: "completed",
+        kind: "turn.plan.updated",
+        turnId: "turn-1",
+        sequence: 3,
+        createdAt: "2026-02-23T00:00:05.000Z",
+        payload: { plan: [{ step: "Check", status: "completed" }] },
+      }),
+      makeActivity({ sequence: 4, kind: "tool.completed" }),
+      makeActivity({
+        id: "started",
+        kind: "turn.plan.updated",
+        turnId: "turn-1",
+        sequence: 1,
+        payload: { plan: [{ step: "Check", status: "inProgress" }] },
+      }),
+      makeActivity({ sequence: 2, kind: "context-window.updated" }),
+    ]);
+    expect(deriveActivePlanState(activities, TurnId.make("turn-1"))?.steps).toEqual([
+      { step: "Check", status: "completed", durationMs: 5_000 },
+    ]);
+    expect(activities[0]?.id).toBe("completed");
+    expect(deriveActivePlanState([makeActivity({ kind: "tool.completed" })], undefined)).toBeNull();
+  });
+
   it("returns the latest plan update for the active turn", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -506,213 +522,6 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities);
     expect(entries.map((entry) => entry.id)).toEqual(["tool-complete"]);
-  });
-
-  it("shows a subagent spawn immediately and preserves its full prompt", () => {
-    const prompt = "Audit every SQL change.\n\nInclude migrations, indexes, and rollback risks.";
-    const activities = [
-      makeActivity({
-        id: "subagent-start",
-        kind: "tool.started",
-        summary: "Subagent task",
-        payload: {
-          itemType: "collab_agent_tool_call",
-          toolCallId: "spawn-1",
-          status: "inProgress",
-          data: {
-            item: {
-              type: "collabAgentToolCall",
-              tool: "spawnAgent",
-              prompt,
-              model: "reviewer",
-              reasoningEffort: "high",
-              status: "inProgress",
-              receiverThreadIds: ["child-thread-1"],
-            },
-          },
-        },
-      }),
-    ];
-
-    const [entry] = deriveWorkLogEntries(activities);
-    expect(entry?.subagentRunIds).toEqual(["child-thread-1"]);
-    expect(entry?.subagentPrompt).toBe(prompt);
-    expect(entry?.subagentModel).toBe("reviewer");
-    expect(entry?.subagentReasoningEffort).toBe("high");
-    expect(deriveSubagentRuns(activities)).toEqual([
-      {
-        id: "child-thread-1",
-        title: "reviewer",
-        prompt,
-        model: "reviewer",
-        reasoningEffort: "high",
-        status: "inProgress",
-        createdAt: "2026-02-23T00:00:00.000Z",
-        updatedAt: "2026-02-23T00:00:00.000Z",
-      },
-    ]);
-  });
-
-  it("derives a real Codex v2 subagent run from subAgentActivity", () => {
-    const started = makeActivity({
-      id: "codex-v2-subagent-start",
-      kind: "tool.completed",
-      summary: "Subagent task",
-      payload: {
-        itemType: "collab_agent_tool_call",
-        status: "inProgress",
-        data: {
-          item: {
-            type: "subAgentActivity",
-            tool: "spawnAgent",
-            agentThreadId: "child-thread-1",
-            agentPath: "/root/reviewer",
-            receiverThreadIds: ["child-thread-1"],
-            status: "inProgress",
-          },
-        },
-      },
-    });
-    const completed = makeActivity({
-      id: "codex-v2-subagent-complete",
-      kind: "tool.updated",
-      createdAt: "2026-02-23T00:00:01.000Z",
-      summary: "Subagent task",
-      payload: {
-        itemType: "collab_agent_tool_call",
-        status: "completed",
-        data: {
-          item: {
-            type: "subAgentActivity",
-            tool: "spawnAgent",
-            agentThreadId: "child-thread-1",
-            agentPath: "/root/reviewer",
-            receiverThreadIds: ["child-thread-1"],
-            status: "completed",
-          },
-        },
-      },
-    });
-
-    expect(deriveSubagentRuns([started, completed])).toEqual([
-      {
-        id: "child-thread-1",
-        title: "reviewer",
-        prompt: "",
-        status: "completed",
-        createdAt: "2026-02-23T00:00:00.000Z",
-        updatedAt: "2026-02-23T00:00:01.000Z",
-      },
-    ]);
-  });
-
-  it("does not create a bogus run when a child interacts with the parent thread", () => {
-    const interaction = makeActivity({
-      id: "codex-v2-subagent-message",
-      kind: "tool.completed",
-      summary: "Subagent message",
-      payload: {
-        itemType: "collab_agent_tool_call",
-        status: "inProgress",
-        data: {
-          item: {
-            type: "subAgentActivity",
-            tool: "sendInput",
-            kind: "interacted",
-            agentThreadId: "parent-thread-1",
-            agentPath: "/root",
-            receiverThreadIds: ["parent-thread-1"],
-            status: "inProgress",
-          },
-        },
-      },
-    });
-
-    expect(deriveSubagentRuns([interaction])).toEqual([]);
-    expect(deriveWorkLogEntries([interaction])[0]?.label).toBe("Subagent message");
-  });
-
-  it("keeps subagent start and finish as separate timeline events", () => {
-    const started = makeActivity({
-      id: "subagent-lifecycle-started",
-      kind: "tool.started",
-      summary: "Started subagent",
-      payload: {
-        itemType: "collab_agent_tool_call",
-        toolCallId: "spawn-1",
-        status: "inProgress",
-        title: "Started subagent",
-        data: {
-          item: {
-            type: "subAgentActivity",
-            tool: "spawnAgent",
-            kind: "started",
-            agentThreadId: "child-thread-1",
-            status: "inProgress",
-          },
-        },
-      },
-    });
-    const finished = makeActivity({
-      id: "subagent-lifecycle-finished",
-      kind: "tool.updated",
-      createdAt: "2026-02-23T00:00:01.000Z",
-      summary: "Finished subagent",
-      payload: {
-        itemType: "collab_agent_tool_call",
-        toolCallId: "spawn-1",
-        status: "completed",
-        title: "Finished subagent",
-        data: {
-          item: {
-            type: "subAgentActivity",
-            tool: "spawnAgent",
-            agentThreadId: "child-thread-1",
-            status: "completed",
-          },
-        },
-      },
-    });
-
-    expect(deriveWorkLogEntries([started, finished]).map((entry) => entry.label)).toEqual([
-      "Started subagent",
-      "Finished subagent",
-    ]);
-  });
-
-  it("uses the Claude tool id as the subagent run and keeps the exact prompt", () => {
-    const prompt = "First line\n\nSecond line with  two spaces.";
-    const activities = [
-      makeActivity({
-        id: "claude-subagent-start",
-        kind: "tool.started",
-        summary: "Subagent task",
-        payload: {
-          itemType: "collab_agent_tool_call",
-          toolCallId: "tool-task-1",
-          status: "inProgress",
-          data: {
-            toolName: "Task",
-            input: {
-              description: "Review the database layer",
-              prompt,
-              subagent_type: "code-reviewer",
-              model: "sonnet",
-              effort: "max",
-            },
-          },
-        },
-      }),
-    ];
-
-    expect(deriveSubagentRuns(activities)[0]).toMatchObject({
-      id: "tool-task-1",
-      title: "Review the database layer",
-      prompt,
-      model: "sonnet",
-      reasoningEffort: "max",
-      status: "inProgress",
-    });
   });
 
   it("omits routine setup updates before work starts and after later turn activity", () => {
@@ -2316,53 +2125,43 @@ describe("deriveActiveWorkStartedAt", () => {
 });
 
 describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
-  it("uses one native task CTA when transcript and lifecycle shapes describe the same child", () => {
-    const transcriptActivity = makeActivity({
-      id: "child-transcript-spawn",
-      kind: "tool.started",
-      summary: "Started subagent",
-      turnId: "turn-spawn",
-      sequence: 1,
-      payload: {
-        itemType: "collab_agent_tool_call",
-        status: "inProgress",
-        data: {
-          item: {
-            type: "subAgentActivity",
-            kind: "started",
-            agentThreadId: "child-1",
-            receiverThreadIds: ["child-1"],
-            agentPath: "/root/reviewer",
-            status: "inProgress",
-          },
-        },
-      },
-    });
-    const lifecycleActivity = makeActivity({
-      id: "child-native-lifecycle",
-      kind: "task.started",
-      summary: "Reviewer",
-      turnId: "turn-spawn",
-      sequence: 2,
-      payload: {
-        taskId: "child-1",
-        taskType: "local_agent",
-        role: "reviewer",
-        timelineBypass: true,
-      },
-    });
-
-    const entries = deriveWorkLogEntries([transcriptActivity, lifecycleActivity]);
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.agentSpawn?.agentTaskIds).toEqual(["child-1"]);
-    expect(entries[0]?.sourceActivityKind).toBe("task.started");
-    expect(deriveSubagentRuns([transcriptActivity, lifecycleActivity])[0]?.id).toBe("child-1");
-  });
-
-  it("N concurrent subagents produce exactly N lifecycle rows, zero attributed tool rows", () => {
+  it("concurrent subagents replace their launch tools with one lifecycle row", () => {
     const activities: OrchestrationThreadActivity[] = [];
     for (let agent = 0; agent < 5; agent += 1) {
+      activities.push(
+        makeActivity({
+          kind: "tool.updated",
+          summary: "Subagent task",
+          payload: {
+            toolCallId: `launch-${agent}`,
+            itemType: "collab_agent_tool_call",
+            status: "inProgress",
+            data: { toolName: agent % 2 === 0 ? "Agent" : "Task" },
+          },
+          turnId: "turn-batch",
+          sequence: agent - 10,
+        }),
+      );
+      expect(deriveWorkLogEntries(activities)).toHaveLength(0);
+    }
+    for (let agent = 0; agent < 5; agent += 1) {
       const taskId = `task-${agent}`;
+      const toolUseId = `launch-${agent}`;
+      expect(deriveWorkLogEntries(activities)).toHaveLength(agent === 0 ? 0 : 1);
+      activities.push(
+        makeActivity({
+          id: `started-${agent}`,
+          kind: "task.started",
+          summary: "Task started",
+          payload: { taskId, toolUseId, taskType: "local_agent" },
+          turnId: "turn-batch",
+          sequence: agent * 20 - 1,
+        }),
+      );
+      const runningEntries = deriveWorkLogEntries(activities);
+      expect(runningEntries).toHaveLength(1);
+      expect(runningEntries[0]!.id).toBe("started-0");
+      expect(runningEntries[0]!.agentSpawn?.agentTaskIds).toHaveLength(agent + 1);
       // Progress ticks (several per agent) + attributed tool rows.
       for (let tick = 0; tick < 4; tick += 1) {
         activities.push(
@@ -2370,7 +2169,7 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
             kind: "task.progress",
             summary: `agent ${agent} tick ${tick}`,
             tone: "info",
-            payload: { taskId, summary: `working ${tick}`, role: "explorer" },
+            payload: { taskId, toolUseId, summary: `working ${tick}`, role: "explorer" },
             turnId: "turn-batch",
             sequence: agent * 20 + tick,
           }),
@@ -2391,10 +2190,18 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
           tone: "info",
           payload: {
             taskId,
+            toolUseId,
             status: "completed",
             summary: `agent ${agent} done`,
             role: "explorer",
           },
+          turnId: "turn-batch",
+          sequence: agent * 20 + 19,
+        }),
+        makeActivity({
+          kind: "tool.completed",
+          summary: "Subagent task",
+          payload: { toolCallId: toolUseId, status: "completed" },
           turnId: "turn-batch",
           sequence: agent * 20 + 19,
         }),
@@ -2410,19 +2217,6 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
     expect(spawnRows[0]!.agentSpawn!.workflowId).toBeNull();
     // No agent-attributed tool rows leak into the main log.
     expect(entries.some((entry) => entry.sourceActivityKind?.startsWith("tool."))).toBe(false);
-  });
-
-  it("shows attributed tool rows inside their subagent transcript", () => {
-    const activity = makeActivity({
-      kind: "tool.completed",
-      summary: "Read file",
-      payload: { itemType: "dynamic_tool_call", agentId: "task-1" },
-    });
-
-    expect(deriveWorkLogEntries([activity])).toEqual([]);
-    expect(deriveWorkLogEntries([activity], { includeAgentInternal: true })[0]?.label).toBe(
-      "Read file",
-    );
   });
 
   it("a workflow run and its members collapse into one CTA row keyed to the coordinator", () => {
@@ -2457,15 +2251,69 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
     );
   });
 
-  it("keeps unattributed tool rows (over-hiding loses the only signal)", () => {
+  it("keeps unrelated tools and failed launches, including failures after a task starts", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
         kind: "tool.completed",
         summary: "Bash",
         payload: { itemType: "command_execution", command: "ls" },
       }),
+      makeActivity({
+        id: "unlinked-failure",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        tone: "error",
+        payload: { toolCallId: "unlinked", status: "failed" },
+      }),
+      makeActivity({
+        id: "linked-task",
+        kind: "task.started",
+        summary: "Task started",
+        payload: { taskId: "agent", toolUseId: "linked", taskType: "local_agent" },
+      }),
+      makeActivity({
+        id: "linked-failure",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: { toolCallId: "linked", status: "failed" },
+      }),
+      makeActivity({
+        id: "orphan-completion",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          toolCallId: "orphan",
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: { toolName: "Agent" },
+        },
+      }),
+      makeActivity({
+        id: "send-input",
+        kind: "tool.updated",
+        payload: {
+          toolCallId: "send-input",
+          itemType: "collab_agent_tool_call",
+          status: "inProgress",
+          data: { toolName: "send_input" },
+        },
+      }),
+      makeActivity({
+        id: "active-launch-error",
+        kind: "tool.updated",
+        tone: "error",
+        payload: {
+          toolCallId: "active-launch-error",
+          itemType: "collab_agent_tool_call",
+          status: "inProgress",
+          data: { toolName: "Task" },
+        },
+      }),
     ]);
-    expect(entries).toHaveLength(1);
+    expect(entries).toHaveLength(7);
+    expect(entries.map((entry) => entry.id)).toEqual(
+      expect.arrayContaining(["unlinked-failure", "linked-task", "linked-failure"]),
+    );
   });
 
   it("folds timelineBypass agent rows into one CTA (Codex children, workflow members)", () => {

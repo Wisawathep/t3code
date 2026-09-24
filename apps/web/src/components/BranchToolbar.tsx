@@ -12,10 +12,17 @@ import {
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
+
 import type { SubagentRunSummary } from "../session-logic";
-import { useProject, useThreadShell, useThreadShellsForProjectRefs } from "../state/entities";
+import {
+  useProject,
+  useThread,
+  useThreadShell,
+  useThreadShellsForProjectRefs,
+} from "../state/entities";
 import { useWorktrees, useWorktreesOnce } from "../state/queries";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
+
 import {
   type EnvMode,
   type EnvironmentOption,

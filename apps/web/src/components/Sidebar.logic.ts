@@ -1,3 +1,4 @@
+import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
 import {
@@ -7,7 +8,10 @@ import {
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/unstable/reactivity";
-import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
+import {
+  activeThreadAnchorTimestampMs,
+  planPinnedReorder,
+} from "@t3tools/client-runtime/state/thread-sort";
 import {
   getThreadSortTimestamp,
   resolveSettledThreadTimestamp,
@@ -84,10 +88,14 @@ export function useRetainedValue<T>(key: string | null, value: T | null): T | nu
 
 export type SidebarNewThreadEnvMode = "local" | "worktree";
 
-// Sidebar.motion handles ordinary section changes. Sortable transforms own
-// dragging; replaying their committed DOM order would animate the drop twice.
-export const animateSidebarLayoutChanges: AnimateLayoutChanges = (args) =>
+// The list already reaches its destination through sortable transforms while
+// the pointer is down. dnd-kit's default also animates the committed DOM order
+// after release, replaying the same movement across every affected row.
+export const animatePinnedLayoutChanges: AnimateLayoutChanges = (args) =>
   args.isSorting ? defaultAnimateLayoutChanges(args) : false;
+
+// Backwards-compatible name used by the legacy sidebar tests and sortable rows.
+export const animateSidebarLayoutChanges = animatePinnedLayoutChanges;
 
 // Rows and section markers share one sortable list. The separators resolve
 // the lifecycle action; Sidebar.drag previews the resulting layout. Pinned
@@ -921,9 +929,9 @@ export function shouldRecedeSidebarThread(input: {
   isActive: boolean;
   isSelected: boolean;
 }): boolean {
-  if (input.isActive || input.isSelected) return false;
+  if (input.isActive || input.isSelected || input.status === "input") return false;
   if (input.status === "working" || input.status === "monitoring") return true;
-  if (input.status === "ready" || input.status === "approval" || input.status === "input") {
+  if (input.status === "ready" || input.status === "approval") {
     return !input.isUnread && !input.isWoke;
   }
   return false;
@@ -986,7 +994,31 @@ function firstValidTimestamp(
   return null;
 }
 
-export { sortActiveThreadsByOrderKey as sortThreadsForSidebar } from "@t3tools/client-runtime/state/thread-sort";
+// User messages move active threads to the top. Other thread updates leave
+// their position alone; creation and un-settle remain lifecycle anchors.
+export function sortThreadsForSidebar<
+  T extends {
+    readonly environmentId?: string;
+    readonly id: string;
+    readonly createdAt: string;
+    readonly latestUserMessageAt?: string | null | undefined;
+    readonly unsettledAt?: string | null | undefined;
+  },
+>(threads: readonly T[]): T[] {
+  return [...threads].toSorted(
+    (left, right) =>
+      Math.max(
+        activeThreadAnchorTimestampMs(right),
+        toSortableTimestamp(right.latestUserMessageAt ?? undefined) ?? 0,
+      ) -
+        Math.max(
+          activeThreadAnchorTimestampMs(left),
+          toSortableTimestamp(left.latestUserMessageAt ?? undefined) ?? 0,
+        ) ||
+      (left.environmentId ?? "").localeCompare(right.environmentId ?? "") ||
+      left.id.localeCompare(right.id),
+  );
+}
 
 // Pinned-reorder key math and the keyed sort live in client-runtime
 // (state/thread-sort) so web and mobile compute identical pinned orders.
@@ -994,31 +1026,30 @@ export { pinOrderKeyBetween, planPinnedReorder } from "@t3tools/client-runtime/s
 export { sortPinnedThreadsByOrderKey as sortPinnedThreadsForSidebar } from "@t3tools/client-runtime/state/thread-sort";
 
 /**
- * Search the already-ordered sidebar thread collection by title only.
+ * Search the already-ordered sidebar thread collection by title or linked PR.
  * Keeping the input order means lifecycle ordering (active, snoozed, settled)
  * remains stable while the user narrows the list.
  */
-export function searchSidebarThreadsByTitle<T extends { readonly title: string }>(
-  threads: readonly T[],
-  query: string,
-): T[] {
+export function searchSidebarThreads<
+  T extends { readonly title: string } & Parameters<typeof threadPullRequestSearchTerms>[0],
+>(threads: readonly T[], query: string): T[] {
   const normalizedQuery = query.trim().toLowerCase();
   if (normalizedQuery.length === 0) return [];
-  return threads.filter((thread) => thread.title.toLowerCase().includes(normalizedQuery));
+  return threads.filter((thread) =>
+    [thread.title, ...threadPullRequestSearchTerms(thread)].some((term) =>
+      term.toLowerCase().includes(normalizedQuery),
+    ),
+  );
 }
 
 export function filterSidebarProjectScopeItems<TItem extends { readonly value: string }>(input: {
   items: readonly TItem[];
-  activeScopeKey: string | null;
   query: string;
   matches: (item: TItem, query: string) => boolean;
 }): readonly TItem[] {
-  const projectItems = input.items.filter((item) => item.value !== "all");
   const query = input.query.trim();
-  if (query.length > 0) {
-    return projectItems.filter((item) => input.matches(item, query));
-  }
-  return input.activeScopeKey === null ? projectItems : input.items;
+  if (query.length === 0) return input.items;
+  return input.items.filter((item) => item.value !== "all" && input.matches(item, query));
 }
 
 export interface SidebarProjectScopeMenuState {

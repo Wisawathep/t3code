@@ -6,7 +6,7 @@ Git repository cache keys use Node's native `realpath` so Windows long paths and
 
 ## Divergence Log
 
-This is a current-state record only. Each entry describes a surviving difference between `HEAD` and the latest shared base, determined with `git merge-base HEAD upstream/main` (currently `2a3035353`, the upstream parent of the 2026-09-09 merge). A feature adopted from upstream is not a divergence merely because it was involved in a merge.
+This is a current-state record only. Each entry describes a surviving difference between `HEAD` and the latest shared base, determined with `git merge-base HEAD upstream/main` (currently `0e0ddaeed`, the upstream parent of the 2026-09-13 merge). A feature adopted from upstream is not a divergence merely because it was involved in a merge.
 
 Keep stable IDs when updating this section; gaps are intentional. When upstream absorbs a difference, remove or rewrite the entry rather than preserving chronology here. Update its behavior, implementation evidence, and validation when the surviving difference changes.
 
@@ -80,17 +80,17 @@ SQLite persists capture jobs, immutable checkpoint entries, timeline generations
 
 Fork migrations `036`–`038` establish durable checkpoint state. The reconciliation migrations retain compatibility with databases that used upstream's overlapping migration numbers. Existing fork history through `052_RemoveManagementApiKeyRuntimeModes` remains unchanged.
 
-Migration `053_ReconcileUpstream47History` repairs a database carrying upstream history through `049`, restoring fork checkpoint and subagent state skipped by the overlapping numbers. Fork management-key and auto-resume migrations remain at `050`–`052`. Incoming upstream behavior runs as `054_ClearAutomaticProjectModelDefaults`, `055_ProjectionProjectsAutoPull`, `056_RepairAutomaticSettlementTimestamps`, `057_ProjectionProjectIcon`, `058_ProjectionThreadBranchPullRequest`, and `059_ProjectionThreadsActiveOrderKey`. The final two are guarded additive columns, so histories that already applied upstream `048` and `049` remain safe.
+Migration `053_ReconcileUpstream47History` repairs a database carrying upstream history through `047`, restoring fork checkpoint and subagent state skipped by the overlapping numbers. Fork management-key and auto-resume migrations remain at `050`–`052`. Incoming upstream behavior then runs as `054_ClearAutomaticProjectModelDefaults`, `055_ProjectionProjectsAutoPull`, `056_RepairAutomaticSettlementTimestamps`, and `057_ProjectionProjectIcon`, followed by branch pull requests, active ordering, linked pull-request collections, and composer message context in `058`–`061`. Schema checks keep these changes safe for both fork and upstream database histories.
 
 Terminal provider events end the workspace mutation for their exact turn before local VCS status refresh, but the next provider turn remains behind a capture-finalization barrier until that full user/assistant/tool-call turn has been checkpointed and projected. Capture and mutation intervals are serialized instead of preempting one another, preventing normal provider turns from producing `workspace-mutated` checkpoints. A capture waiting for active work releases the worktree gate, so provider turns in other threads can join the same mutation cohort and share its next stable checkpoint boundary; an already-running capture and checkpoint navigation remain exclusive. Aborted turns and provider-turn handoff ownership retain the same exact-owner completion semantics. A stale lease with no active provider turn is recovered automatically; if ownership is ambiguous, the provider turn continues without checkpoint navigation instead of blocking the conversation. Failed mutation-blocked text messages expose a retry action that reuses the persisted user message when available or recreates an optimistic-only message without duplicating it in the UI.
 
 Capture jobs that first lose the workspace-mutation race or fail can be re-enqueued for the same logical turn boundary. The durable row is reset to pending and remains the single job for its snapshot, while pending, running, and ready jobs are still deduplicated.
 
-**Implementation evidence:** `apps/server/src/checkpointing/`, `apps/server/src/persistence/Migrations/{036_CheckpointDurableState,037_CheckpointLegacyMigration,038_CheckpointCaptureProviderMetadata,039_ReconcileCheckpointAndTitleHistory,046_ReconcileUpstream41History,047_AuthSessionClientConnection,048_ProjectionThreadLinkedPullRequest,049_ProjectionThreadsUnsettledAt,053_ReconcileUpstream47History,054_ClearAutomaticProjectModelDefaults,055_ProjectionProjectsAutoPull,056_RepairAutomaticSettlementTimestamps,057_ProjectionProjectIcon,058_ProjectionThreadBranchPullRequest,059_ProjectionThreadsActiveOrderKey}.ts`, `apps/server/src/orchestration/`, `packages/contracts/src/orchestration.ts`, `packages/client-runtime/src/`, and checkpoint-aware web composer and chat components including `ThreadErrorBanner.tsx`.
+**Implementation evidence:** `apps/server/src/checkpointing/`, `apps/server/src/persistence/Migrations/{036_CheckpointDurableState,037_CheckpointLegacyMigration,038_CheckpointCaptureProviderMetadata,039_ReconcileCheckpointAndTitleHistory,046_ReconcileUpstream41History,047_AuthSessionClientConnection,048_ProjectionThreadLinkedPullRequest,049_ProjectionThreadsUnsettledAt,053_ReconcileUpstream47History,054_ClearAutomaticProjectModelDefaults,055_ProjectionProjectsAutoPull,056_RepairAutomaticSettlementTimestamps,057_ProjectionProjectIcon}.ts`, `apps/server/src/orchestration/`, `packages/contracts/src/orchestration.ts`, `packages/client-runtime/src/`, and checkpoint-aware web composer and chat components including `ThreadErrorBanner.tsx`.
 
 **Recorded validation:** migration and durability regression matrices, sidecar characterization (including unborn repositories, submodules, and linked worktrees), orchestration integration including serialized full-turn capture, deterministic post-capture lease release, stale-lease recovery, non-blocking checkpoint degradation, and persisted-message retry, Windows isolation slices, upstream-ledger reconciliation through migration `047`, full `vp test`, `vp check`, `vp run typecheck`, and `git diff --check`. The 2026-09-01 merge-focused server tests also covered checkpoint projection and reactor behavior after upstream bounded activity hydration and provider event-lifecycle fixes were integrated.
 
-**Last updated:** 2026-09-09
+**Last updated:** 2026-09-05
 
 ### DL008 — Persistent multi-thread split workspaces
 
@@ -218,7 +218,8 @@ The main timeline names started, messaged, resumed, waited, stopped,
 interrupted, failed, and finished subagent operations instead of grouping them under a generic
 task label. Only spawn/resume events can establish child routing, so a child message sent back to
 the parent cannot capture the parent thread or suppress its final completion. The stale-session
-reaper measures idle time from the later of the provider's last activity and session heartbeat, then settles an old active turn only when no live provider session owns it. This preserves genuinely live long-running turns without granting a full new idle window after they settle. Fork transcript correlation supports Codex and Claude. Antigravity retains upstream's task and batch presentation.
+reaper also settles an old active turn when no live provider session owns it, while preserving
+genuinely live long-running turns. Fork transcript correlation supports Codex and Claude. Antigravity retains upstream's task and batch presentation.
 
 **Implementation evidence:** `packages/contracts/src/{provider,providerRuntime,orchestration}.ts`,
 `apps/server/src/provider/Layers/{CodexSessionRuntime,CodexAdapter,ClaudeAdapter,ProviderSessionReaper}.ts`,
@@ -245,7 +246,7 @@ full native lifecycle and terminal output through projection. The 2026-09-01 int
 coverage for the single bounded metadata lookup, newer child settings and reroutes, and model and
 effort propagation through every task event.
 
-**Last updated:** 2026-09-09
+**Last updated:** 2026-09-05
 
 ### DL019 — Desktop backend continuity and owned process-tree cleanup
 
@@ -447,13 +448,13 @@ The Windows job also uses upstream's corrected Visual Studio Spectre runtime com
 
 ### DL029 — User messages promote active sidebar threads
 
-The current sidebar honors upstream's explicit active-order key for manual placement. Where no order key exists, a new user message promotes the active thread above creation and un-settle lifecycle anchors; other thread updates do not change its position. Equal fallback anchors use thread then environment IDs for deterministic ordering.
+The current sidebar moves an active thread to the top when the user sends it a new message. Other thread updates do not change its position. Creation and un-settle timestamps remain lifecycle anchors, and equal anchors use environment and thread IDs for deterministic ordering.
 
 **Implementation evidence:** `apps/web/src/components/Sidebar.logic.ts`, `apps/web/src/components/Sidebar.logic.test.ts`, `packages/client-runtime/src/state/threadSort.ts`, and its thread-sort tests.
 
 **Recorded validation:** focused shared, web, and mobile thread-sort tests covering user-message promotion, non-message updates, creation fallback, un-settle re-entry, and deterministic ties; `vp check`; and `vp run typecheck`.
 
-**Last updated:** 2026-09-09
+**Last updated:** 2026-09-05
 
 ### DL030 — Isolated macOS GitHub releases
 
@@ -561,11 +562,57 @@ limits are intentionally unsupported.
 `apps/web/src/components/settings/{SettingsPanels,settingsSearch}.ts*`.
 
 **Recorded validation:** focused native Claude and Codex reset parsing, provider-runtime,
-settings-contract, and server-settings tests.
+settings-contract, and server-settings tests. The 2026-09-16 merge reran the provider-runtime
+ingestion suite (78 passing) with the repository-backed latest-user-message lookup.
 
-**Last updated:** 2026-09-03
+**Last updated:** 2026-09-16
 
-### DL033 — Client-side prompt queue for sequential follow-up turns
+### DL033 — Model search within the selected group
+
+The shared web and desktop model picker searches only the selected provider instance or Favorites.
+An All providers group searches across available instances. The group rail stays visible during
+search, and switching groups preserves the query. Provider and continuation restrictions still apply.
+
+**Implementation evidence:** `apps/web/src/components/chat/ModelPickerContent.tsx`,
+`ModelPickerSidebar.tsx`, and `ModelPickerContent.test.ts`.
+
+**Last updated:** 2026-09-07
+
+### DL034 — Prompt suggestion ghost text from the agent's own turn
+
+When the client setting `enablePromptSuggestion` is on (default off), Codex and Claude sessions
+receive a standing instruction to end each reply with a tagged one-line proposal for the user's
+next prompt. The agent writes it from its real context (repository instructions, memory, and the
+conversation so far); no separate model call, provider session, or transcript summary is made.
+`ProviderRuntimeIngestion` withholds any partial or open tag from streamed and buffered deltas,
+strips every tagged block at completion, and carries the sanitized text as `suggestion` on the
+assistant message through the decider, projector, client reducer, and SQLite projection
+(migration `062`). The web composer shows it as ghost text once the thread is idle and the
+composer is empty; Tab accepts it, typing dismisses it for that message, and a new message or
+thread resets it. Cursor, Grok, OpenCode, and Antigravity receive no instruction. Mobile has no
+toggle or ghost text. An optional `promptSuggestionInstructions` setting appends extra guidance to
+the built-in instruction. Both settings live under Settings → General → Prompt suggestion.
+They persist on the client and travel with turn requests to local or remote environments;
+server settings do not control them. Codex applies the submitting client's preference per
+turn. Claude pins the preference and instructions at its first session start in a thread,
+preserving them across session recovery and restarts. Each viewing client independently
+controls whether suggestions appear in its composer. See [prompt suggestions](docs/user/composer.md#prompt-suggestions).
+
+**Implementation evidence:** `packages/shared/src/promptSuggestion.ts`,
+`packages/contracts/src/{settings,orchestration,provider}.ts`,
+`apps/server/src/provider/Layers/{ProviderService,CodexSessionRuntime,ClaudeAdapter}.ts`,
+`apps/server/src/provider/CodexDeveloperInstructions.ts`,
+`apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts`,
+`apps/server/src/orchestration/{decider,projector}.ts`,
+`apps/server/src/persistence/Migrations/062_ProjectionThreadMessageSuggestions.ts`,
+`packages/client-runtime/src/state/threadReducer.ts`,
+`apps/web/src/promptSuggestion.logic.ts`, `apps/web/src/components/chat/usePromptSuggestion.ts`,
+`apps/web/src/components/chat/ChatComposer.tsx`, `apps/web/src/components/ComposerPromptEditor.tsx`,
+and `apps/web/src/components/settings/SettingsPanels.tsx`.
+
+**Last updated:** 2026-09-16
+
+### DL035 — Client-side prompt queue for sequential follow-up turns
 
 While a turn is running, the composer can queue follow-up prompts (up to 10 per
 thread) that each fire as their own fresh turn once the thread goes idle. This is
@@ -599,48 +646,65 @@ its own delivery semantics.
 
 **Last updated:** 2026-09-07
 
-### DL034 — Model search within the selected group
-
-The shared web and desktop model picker searches only the selected provider instance or Favorites.
-An All providers group searches across available instances. The group rail stays visible during
-search, and switching groups preserves the query. Provider and continuation restrictions still apply.
-
-**Implementation evidence:** `apps/web/src/components/chat/ModelPickerContent.tsx`,
-`ModelPickerSidebar.tsx`, and `ModelPickerContent.test.ts`.
-
-**Last updated:** 2026-09-07
-
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
 
 Don't forget to update the `base` tag after each merge to track the latest shared base with upstream/main.
 
-### 2026-09-09 — Merge upstream/main into main
+### 2026-09-24 — Merge Type-Delta release `v0.0.40-c` into `main`
 
 **Merge commit:** this merge commit
-**Parents:** `5d64ca084` (integrated Type-Delta fork state) and `2a3035353` (upstream/main)
+**Parents:** `3b062ecc0` (local fork main) and `fa5716d76` (`v0.0.40-c`, Type-Delta/t3code)
 
-- Reconciled the fork's deployed migration ledger through `057`: upstream branch-pull-request and active-order-key columns now run as guarded `058` and `059`, while the existing `053` reconciliation remains sufficient for upstream histories through `049`.
-- Retained durable sidecar checkpoint navigation, its exact-owner mutation barriers, checkpoint fallback behavior, auto-resume, split workspaces, subagent transcript isolation, existing-worktree selection, zrok, prompt queue, per-instance gateway catalogs, management keys, Windows resolver safeguards, desktop tray continuity, and preview recovery. Re-expressed fork sidebar behavior inside upstream's unified order-key/drag model, preserving user-message promotion when no manual order exists.
-- Adopted current upstream provider, agent-session import, pull-request, recording, browser snapshot, provider-setting Wizard, model-picker, chat, desktop packaging, dependency, and Effect API changes. The fork's Claude SDK patch remains pinned at `0.3.170`; its newer SDK fields continue to use structural compatibility handling.
-- Updated retained fork code for Effect RC tagged errors and targeted persistence reads. Gateway catalogs still supplement built-ins, while Codex launch arguments remain based only on gateway-routable catalog models.
-- Local QA passed `vp check`, `vp run typecheck`, focused provider, gateway, checkpoint, migration, MCP, timeline, subagent, and thread-order suites, `vp run lint:mobile` (native tool binaries unavailable and skipped), and `node scripts/release-smoke.ts`. The full diff checker still reports pre-existing whitespace in imported upstream/vendor patch files; no fork-owned source formatting errors remain.
-- Built and validated the unsigned native Windows x64 NSIS installer as `release/T3-Code-0.0.38-x64.exe` with its blockmap. The builder validated 58 payload files and 26 sidecar natives. The local WSL distribution lacks Node and a C++ toolchain, so no matching Linux `node-pty` prebuild was available; this installer intentionally omits the WSL runtime, matching the prior local 0.0.38 artifact rather than claiming that backend works.
-- Kept release manifests at `0.0.38` for the requested local Windows installer. No branch, tag, artifact, package, or release is pushed to a remote.
+- Both sides had independently merged upstream through `2a3035353` with different conflict resolutions, so a plain three-way merge reported 43 conflicting files. The tree was rebuilt from `v0.0.40-c` with only the local fork's own work reapplied, preferring the release's resolution of every shared upstream change.
+- Reapplied the DL035 client-side prompt queue (renumbered from DL033, which the release now uses for model search) on top of the release's compaction-aware `isWorking` and citation-send code in `ChatView.tsx` and `ChatComposer.tsx`.
+- Reapplied the local DL026 gateway fixes: Claude disabled-gateway snapshots are authoritative, successful gateway catalogs supplement built-in models, and gateway-discovered rows appear in the instance model picker.
+- Dropped the local "scope model search to selected provider" merge because the release already carries the same change as DL033.
+- Adopted the release's prompt suggestions (DL034), migration `062`, and its merge-history record.
 
-### 2026-09-07 — Merge feat/composer-prompt-queue into main
+### 2026-09-09 — Merge upstream/main into main (local fork)
+
+**Parents:** `5d64ca084` and `2a3035353` (upstream/main)
+
+- Synced the local fork with upstream through `2a3035353` while retaining the prompt queue and gateway catalog fixes. Built `release/T3-Code-0.0.38-x64.exe` without the WSL runtime.
+
+### 2026-09-07 — Merge feat/composer-prompt-queue into main (local fork)
+
+**Parents:** `b0c03c3c3` and `2e9b28c2c` (feat/composer-prompt-queue)
+
+- Added the client-side prompt queue (Enter queues while a turn runs) and the Claude disabled-gateway fix.
+
+### 2026-09-16 — Merge `feat/prompt-suggestion` into `main`
 
 **Merge commit:** this merge commit
-**Parents:** `b0c03c3c354a5764e32dc30779e4a6a752a1895f` (main, synced with upstream through `2fb99a7a6`) and `2e9b28c2cb3db85fe6267cc57710edf5493c5eaa` (feat/composer-prompt-queue)
+**Parents:** `0283c3542` (fork main) and `1717a5dc9` (feature branch)
 
-Consolidated the fork's in-progress feature branch into main after fast-forwarding main to the pulled origin state. The branch carried the DL033 client-side prompt queue (with the follow-up refinement that Enter queues while a turn is running) and the DL026 Claude "disabled gateway is authoritative" fix.
+- Reapplied the prompt suggestion feature after the upstream sync while preserving the current scoped settings model, inline context records, prompt-history navigation, pull-request autocomplete, and expanded MCP tool availability.
+- Kept upstream migration `058_ProjectionThreadBranchPullRequest` and the fork's idempotent `062_ProjectionThreadMessageSuggestions`; discarded only the obsolete feature-branch migration files that reused ID `058`.
+- Preserved prompt suggestion preferences as client-local settings and reconciled Codex per-turn delivery and Claude per-thread pinning with the current provider-service recovery flow.
+- Recomposed fork auto-resume and task-title recovery with upstream's repository-backed ingestion: auto-resume reads the latest user-message id and thread shell instead of hydrating full thread detail, and the latest-task activity query now returns the `subagentId` column its decoder expects.
 
-- Kept both sides where the branch and the newer main touched the same code. In `ProviderRegistry.test.ts` and `ChatComposer.tsx`, the branch's additions (`queueComposerPrompt`, the disabled-gateway regression test) sat next to unrelated new main code (`submitCitationAndSend`, the "drops custom models" test); both were preserved as independent members.
-- In `ChatView.tsx`, took main's newer `isWorking` (extended with `isCompacting`) and its compaction-tracking block, and layered the branch's prompt-queue state on top, discarding the branch's stale `isWorking` duplicate.
-- Renumbered the branch's prompt-queue Divergence Log entry from DL028 to DL033 because main had since claimed DL028–DL032 (isolated Windows/macOS releases, sidebar promotion, management keys, auto-resume). Merged the DL026 gateway notes and validation records from both sides.
-- Dropped the branch's duplicate PR-filter and `cli-external-packages` `Set`-lookup edits in favor of the byte-identical versions main already carried.
-- Verification and the resulting 0.0.38 release build are recorded below / in the release artifacts.
+### 2026-09-14 — Post-merge migration repair (follow-up to the 2026-09-13 merge)
+
+The 2026-09-13 merge assigned upstream migrations `058`–`061` after the fork's deployed history, but the deployed fork database had already recorded a different `058` (`ProjectionThreadMessageSuggestions`, from the `feat/prompt-suggestion` line) under the same ID. The migrator tracks applied migrations by ID, so upstream's `058_ProjectionThreadBranchPullRequest` was silently skipped against the live database and the server crashed on startup (`no such column: branch_pull_request_json`).
+
+Repairs:
+
+- **Deployed database:** backed up (`VACUUM INTO`), then the skipped migration's DDL was applied by hand (`ALTER TABLE projection_threads ADD COLUMN branch_pull_request_json TEXT`) and the `effect_sql_migrations` record for ID 58 was corrected to `ProjectionThreadBranchPullRequest`.
+- **Code:** the fork's suggestion column migration was re-added as `062_ProjectionThreadMessageSuggestions` (import + manifest entry in `Migrations.ts`). It is deliberately idempotent — it checks for the column before altering — because deployed databases already carry `suggestion` from the old 058, while fresh databases (including upstream lineage) do not.
+- Validation: focused `vp test run` on `062_ProjectionThreadMessageSuggestions.test.ts` (2 passing: column added from empty, idempotent re-run), full `vp check` / `vp run typecheck` / web + server builds, service restart with HTTP 200 on `127.0.0.1:21013`, build stamp newer than HEAD.
+
+### 2026-09-13 — Merge upstream/main into main
+
+**Merge commit:** this merge commit
+**Parents:** `12efb3f9c6ef0fb4e42cab26b4489bb7a7e2792e` (fork) and `0e0ddaeedf30698bec131caf040a8e8d7b2e3f37` (upstream/main)
+
+- Preserved durable fork checkpoints, sidecar recovery, undo/redo/jump navigation, split workspaces, Windows path handling, gateway catalogs, subscription meters, zrok sharing, management keys, and automatic usage-limit resume. Upstream's conversation rewind maps to the existing checkpoint jump flow with file restoration disabled when requested.
+- Adopted upstream thread notifications and sounds, inline previews and attachment chips, context-paste attachments, default diff state, provider account-home usage limits, screen-reader headings, linked pull-request collections, active-order persistence, and saved-environment disabling. Incoming migrations `058`–`061` were assigned after the fork's deployed migration history.
+- Combined provider lifecycle and adapter fixes: Claude retains fork rate-limit and terminal-reason handling alongside upstream outcome classification; Claude resolves packaged Windows binaries with the gateway model catalog; Codex keeps text-generation and MCP app-server capabilities. Provider runtime ingestion keeps fork assistant/proposed-plan correlation helpers.
+- Merged sidebar, subagent, right-panel, and composer changes while retaining split-pane ownership, checkpoint actions, and environment-scoped controls. Reconciled the upstream `conversation.revert` request with fork checkpoint controls and kept message context in turn-start queries.
+- Validation: `vp check`, serial `vp run --concurrency-limit 1 typecheck`, focused AgentSessionImporter and OrchestrationReactor tests, and web/server typechecks passed. The full CheckpointReactor suite was started but exceeded the local command window; no browser verification was run.
 
 ### 2026-09-05 — Merge upstream/main into main
 

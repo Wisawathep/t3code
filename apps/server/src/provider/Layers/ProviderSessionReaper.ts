@@ -81,6 +81,14 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         if (idleDurationMs < inactivityThresholdMs) {
           continue;
         }
+        if (thread?.session?.activeTurnId != null) {
+          yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
+            threadId: binding.threadId,
+            activeTurnId: thread.session.activeTurnId,
+            idleDurationMs,
+          });
+          continue;
+        }
 
         // Background work owns the provider process even when the parent turn
         // projection still looks active but its session directory entry is

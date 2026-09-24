@@ -9,6 +9,7 @@
 import {
   ChatAttachment,
   MessageId,
+  OrchestrationMessageContext,
   OrchestrationMessageRole,
   TrimmedNonEmptyString,
   ThreadId,
@@ -28,9 +29,11 @@ export const ProjectionThreadMessage = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.NullOr(TurnId),
   subagentId: Schema.optional(TrimmedNonEmptyString),
+  suggestion: Schema.optional(TrimmedNonEmptyString),
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  context: Schema.optional(OrchestrationMessageContext),
   isStreaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -57,7 +60,6 @@ export const HasProjectionThreadAssistantMessageInput = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,
   streamingOnly: Schema.Boolean,
-  subagentId: Schema.optional(TrimmedNonEmptyString),
 });
 export type HasProjectionThreadAssistantMessageInput =
   typeof HasProjectionThreadAssistantMessageInput.Type;
@@ -108,15 +110,15 @@ export interface ProjectionThreadMessageRepositoryShape {
     input: ListProjectionThreadMessagesInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadMessage>, ProjectionRepositoryError>;
 
-  /** Read the latest user message needed to resume a completed turn. */
-  readonly getLatestUserMessage: (
-    input: ListProjectionThreadMessagesInput,
-  ) => Effect.Effect<Option.Option<ProjectionThreadMessage>, ProjectionRepositoryError>;
-
   /** Read the latest user-message timestamp without loading message bodies. */
   readonly getLatestUserMessageAt: (
     input: ListProjectionThreadMessagesInput,
   ) => Effect.Effect<ProjectionThreadMessage["createdAt"] | null, ProjectionRepositoryError>;
+
+  /** Read the latest user-message id without loading message bodies. */
+  readonly getLatestUserMessageId: (
+    input: ListProjectionThreadMessagesInput,
+  ) => Effect.Effect<ProjectionThreadMessage["messageId"] | null, ProjectionRepositoryError>;
 
   /**
    * Delete projected thread messages by thread.

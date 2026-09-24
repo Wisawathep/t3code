@@ -10,18 +10,42 @@ import type {
   OrchestrationSession,
   OrchestrationThread,
   OrchestrationThreadActivity,
+  ThreadPullRequestLink,
   TurnId,
 } from "@t3tools/contracts";
-import {
-  DEFAULT_CHECKPOINT_NAVIGATION_STATE,
-  isImportedAgentSessionMessageId,
-} from "@t3tools/contracts";
+import { isImportedAgentSessionMessageId } from "@t3tools/contracts";
 import { compareDateTimeStrings } from "@t3tools/shared/dateTime";
+import { threadPullRequestKeysEqual } from "@t3tools/shared/threadPullRequests";
+
+import { DEFAULT_CHECKPOINT_NAVIGATION_STATE } from "@t3tools/contracts";
 
 export type ThreadDetailReducerResult =
   | { readonly kind: "updated"; readonly thread: OrchestrationThread }
   | { readonly kind: "deleted" }
   | { readonly kind: "unchanged" };
+
+/** Keep only a legacy route supplied by the server; detail events cannot resolve project hosts. */
+function withPullRequests(
+  thread: OrchestrationThread,
+  pullRequests: ReadonlyArray<ThreadPullRequestLink>,
+  updatedAt: string,
+): ThreadDetailReducerResult {
+  return {
+    kind: "updated",
+    thread: {
+      ...thread,
+      pullRequests,
+      linkedPullRequest:
+        thread.linkedPullRequest &&
+        pullRequests.some(
+          (link) => link.source !== "stack-dismissed" && link.url === thread.linkedPullRequest?.url,
+        )
+          ? thread.linkedPullRequest
+          : null,
+      updatedAt,
+    },
+  };
+}
 
 const proposedPlanOrder = O.combine<OrchestrationThread["proposedPlans"][number]>(
   O.mapInput(O.String, (p) => p.createdAt),
@@ -112,6 +136,7 @@ export function applyThreadDetailEvent(
           snoozedUntil: null,
           snoozedAt: null,
           deletedAt: null,
+          pullRequests: [],
           messages: [],
           proposedPlans: [],
           activities: [],
@@ -256,6 +281,40 @@ export function applyThreadDetailEvent(
         },
       };
 
+    case "thread.pull-request-linked": {
+      const link = event.payload.link;
+      const others = thread.pullRequests.filter(
+        (existing) => !threadPullRequestKeysEqual(existing, link),
+      );
+      return withPullRequests(thread, [...others, link], event.payload.updatedAt);
+    }
+
+    case "thread.pull-request-unlinked":
+      return withPullRequests(
+        thread,
+        thread.pullRequests.filter(
+          (existing) => !threadPullRequestKeysEqual(existing, event.payload),
+        ),
+        event.payload.updatedAt,
+      );
+
+    case "thread.pull-request-synced": {
+      if (
+        !thread.pullRequests.some((existing) => threadPullRequestKeysEqual(existing, event.payload))
+      ) {
+        return { kind: "unchanged" };
+      }
+      return withPullRequests(
+        thread,
+        thread.pullRequests.map((existing) =>
+          threadPullRequestKeysEqual(existing, event.payload)
+            ? { ...existing, snapshot: event.payload.snapshot, stack: event.payload.stack }
+            : existing,
+        ),
+        event.payload.updatedAt,
+      );
+    }
+
     case "thread.runtime-mode-set":
       return {
         kind: "updated",
@@ -323,9 +382,11 @@ export function applyThreadDetailEvent(
         ...(event.payload.attachments !== undefined
           ? { attachments: event.payload.attachments }
           : {}),
+        ...(event.payload.context !== undefined ? { context: event.payload.context } : {}),
         turnId: event.payload.turnId,
         ...(event.payload.subagentId !== undefined ? { subagentId: event.payload.subagentId } : {}),
         streaming: event.payload.streaming,
+        ...(event.payload.suggestion !== undefined ? { suggestion: event.payload.suggestion } : {}),
         createdAt: event.payload.createdAt,
         updatedAt: event.payload.updatedAt,
       };
@@ -343,12 +404,19 @@ export function applyThreadDetailEvent(
                       ? message.text
                       : entry.text,
                   streaming: message.streaming,
+                  // Re-streaming invalidates any earlier suggestion; completion sets it.
+                  ...(message.streaming
+                    ? { suggestion: undefined }
+                    : message.suggestion !== undefined
+                      ? { suggestion: message.suggestion }
+                      : {}),
                   ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
                   ...(message.subagentId !== undefined ? { subagentId: message.subagentId } : {}),
                   ...(message.streaming ? {} : { updatedAt: message.updatedAt }),
                   ...(message.attachments !== undefined
                     ? { attachments: message.attachments }
                     : {}),
+                  ...(message.context !== undefined ? { context: message.context } : {}),
                 },
           )
         : Arr.append(thread.messages, message);
@@ -859,7 +927,9 @@ function retainMessagesAfterRevert(
           !retainedMessageIds.has(message.id) &&
           (message.turnId === null || retainedTurnIds.has(message.turnId)),
       )
-      .toSorted(
+      // `.sort()`, not `.toSorted()`: `.filter()` above already returned a fresh array, and
+      // this is shared with mobile, which runs on Hermes and has no ES2023 array methods.
+      .sort(
         (left, right) =>
           compareDateTimeStrings(left.createdAt, right.createdAt) ||
           left.id.localeCompare(right.id),

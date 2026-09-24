@@ -1,3 +1,6 @@
+import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
+import { GitPullRequestIcon } from "lucide-react";
+import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
 import { Spinner } from "~/components/ui/spinner";
 import {
   ArchiveIcon,
@@ -21,6 +24,7 @@ import {
 } from "./ThreadStatusIndicators";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { ProjectFavicon } from "./ProjectFavicon";
+import { makeWorkspaceFileDropHandlers } from "./chat/workspaceFileDrop";
 import { useAtomValue } from "@effect/atom-react";
 import { autoAnimate } from "@formkit/auto-animate";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
@@ -77,17 +81,20 @@ import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { releaseProjectDraftUploads } from "../lib/composerDraftUploads";
 import { isTerminalFocused } from "../lib/terminalFocus";
+
 import { cn, isMacPlatform } from "../lib/utils";
-import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
-import { makeWorkspaceFileDropHandlers } from "./chat/workspaceFileDrop";
+
 import {
   readThreadShell,
+  useProject,
   useProjects,
   useThreadShells,
   useThreadShellsForProjectRefs,
 } from "../state/entities";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useThreadRunningTerminalIds } from "../state/terminalSessions";
+import { useEnvironmentQuery } from "../state/query";
+import { vcsEnvironment } from "../state/vcs";
 import { useThreadDiscoveredPorts } from "../portDiscoveryState";
 import { openDiscoveredPort } from "./preview/openDiscoveredPort";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -109,6 +116,10 @@ import { isModelPickerOpen } from "../modelPickerVisibility";
 import { useShortcutModifierState } from "../shortcutModifierState";
 import { ensureLocalApi, readLocalApi } from "../localApi";
 import { useComposerDraftStore } from "../composerDraftStore";
+import {
+  isSameSidebarThreadRef,
+  useSidebarPendingFileDropStore,
+} from "../sidebarPendingFileDropStore";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { useDesktopUpdateState } from "../state/desktopUpdate";
 
@@ -167,6 +178,7 @@ import {
   SidebarMenuSubItem,
   useSidebar,
 } from "./ui/sidebar";
+
 import {
   getThreadKeysToDeselectAfterDelete,
   useThreadSelectionStore,
@@ -186,6 +198,7 @@ import {
   hasSplitThreadDrag,
   readSplitThreadDrag,
 } from "../splitViewDrag";
+
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import {
   archiveSelectedThreadEntries,
@@ -328,6 +341,7 @@ function buildThreadJumpLabelMap(input: {
 
 interface SidebarThreadRowProps {
   thread: SidebarThreadSummary;
+  projectCwd?: string | null;
   orderedProjectThreadKeys: readonly string[];
   isActive: boolean;
   isDisplayedInSplitView: boolean;
@@ -452,7 +466,28 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const threadEnvironmentLabel = isRemoteThread
     ? (remoteEnvLabel ?? (isDesktopLocalThread ? "Local" : "Remote"))
     : null;
+
+  // For grouped projects, the thread may belong to a different environment
+  // than the representative project.  Look up the thread's own project cwd
+  // so git status (and thus PR detection) queries the correct path.
+  const threadProject = useProject(
+    useMemo(
+      () => scopeProjectRef(thread.environmentId, thread.projectId),
+      [thread.environmentId, thread.projectId],
+    ),
+  );
+  const threadProjectCwd = threadProject?.workspaceRoot ?? null;
+  const gitCwd = thread.worktreePath ?? threadProjectCwd ?? props.projectCwd ?? null;
+  const gitStatus = useEnvironmentQuery(
+    leaseLiveStatus && thread.linkedPullRequest == null && thread.branch != null && gitCwd !== null
+      ? vcsEnvironment.status({
+          environmentId: thread.environmentId,
+          input: { cwd: gitCwd },
+        })
+      : null,
+  );
   const isHighlighted = isActive || isDisplayedInSplitView || isSelected;
+
   const handleOpenDiscoveredPort = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       const port = discoveredPorts[0];
@@ -492,10 +527,16 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   });
   const linkedPullRequestStatus = useLinkedThreadPullRequest(
     thread.environmentId,
-    thread.linkedPullRequest ?? thread.branchPullRequest,
+    thread.linkedPullRequest,
     leaseLiveStatus,
+    thread.pullRequests,
+    thread.branchPullRequest,
   );
   const pr = linkedPullRequestStatus?.pr ?? null;
+  const supportsMultiplePullRequests = useSupportsMultiplePullRequests(thread.environmentId);
+  const currentLinkedPr = supportsMultiplePullRequests
+    ? resolveThreadCurrentPullRequestLink(thread.pullRequests)
+    : null;
   const prStatus = prStatusIndicator(pr, linkedPullRequestStatus?.sourceControlProvider);
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const isConfirmingArchive = confirmingArchiveThreadKey === threadKey && !isThreadRunning;
@@ -615,17 +656,26 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   }, []);
   const handlePrClick = useCallback(
     (event: React.MouseEvent<HTMLAnchorElement>) => {
-      if (!prStatus) return;
+      const url = prStatus?.url ?? currentLinkedPr?.url;
+      if (!url) return;
       const openedInRightPanel = openPrLink(
         event,
-        prStatus.url,
+        url,
         openPullRequestsInRightPanel ? threadRef : undefined,
       );
       if (openedInRightPanel && openPullRequestsInRightPanel && !isActive) {
         navigateToThread(threadRef);
       }
     },
-    [isActive, navigateToThread, openPrLink, openPullRequestsInRightPanel, prStatus, threadRef],
+    [
+      isActive,
+      navigateToThread,
+      openPrLink,
+      openPullRequestsInRightPanel,
+      prStatus,
+      currentLinkedPr,
+      threadRef,
+    ],
   );
   const handleRenameInputRef = useCallback(
     (element: HTMLInputElement | null) => {
@@ -729,6 +779,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         size="sm"
         isActive={isActive}
         data-testid={`thread-row-${thread.id}`}
+
         aria-description={
           splitGroupIndicator ? `Included in ${splitGroupIndicator.label}` : undefined
         }
@@ -740,7 +791,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           }),
           "relative isolate",
           splitGroupIndicator && SPLIT_VIEW_GROUP_ROW_CLASS_NAME,
-          isFileDragOver && "ring-1 ring-inset ring-primary/70",
         )}
         style={
           splitGroupIndicator
@@ -748,6 +798,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             : undefined
         }
         draggable
+
         onClick={handleRowClick}
         onDoubleClick={handleRowDoubleClick}
         onDragEnd={handleThreadDragEnd}
@@ -782,6 +833,19 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               </TooltipPopup>
             </Tooltip>
           )}
+          {!pr && currentLinkedPr ? (
+            <a
+              href={currentLinkedPr.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={handlePrClick}
+              className="text-muted-foreground"
+              aria-label={`PR #${currentLinkedPr.number}, status pending`}
+            >
+              <GitPullRequestIcon className="size-3" />
+            </a>
+          ) : null}
           {threadStatus && <ThreadStatusLabel status={threadStatus} />}
           {renamingThreadKey === threadKey ? (
             <input
@@ -1204,6 +1268,12 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     isManualProjectSorting,
     dragHandleProps,
   } = props;
+  const queuePendingFileDrop = useSidebarPendingFileDropStore(
+    (state) => state.queuePendingFileDrop,
+  );
+  const clearPendingFileDrop = useSidebarPendingFileDropStore(
+    (state) => state.clearPendingFileDrop,
+  );
   const environmentMachine = project.allRemoteMembersAreWsl
     ? "linux"
     : project.allRemoteMembersAreDesktopLocal
@@ -1233,6 +1303,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     (settings) => settings.sidebarThreadPreviewCount,
   );
   const router = useRouter();
+
   const splitPaneRefs = useSplitViewStore(selectSplitPaneRefs);
   const splitGroups = useSplitViewStore(selectSplitViewGroups);
   const isSplitViewActive = useSplitViewStore(selectIsSplitViewActive);
@@ -1253,8 +1324,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     return membership;
   }, [splitGroups]);
   const activeSplitThreadKey = activeSplitPane ? scopedThreadKey(activeSplitPane) : null;
-  const queuePendingFileDrop = useSidebarPendingFileDropStore((s) => s.queuePendingFileDrop);
-  const clearPendingFileDrop = useSidebarPendingFileDropStore((s) => s.clearPendingFileDrop);
+
   const { isMobile, setOpenMobile } = useSidebar();
   const markThreadUnread = useUiStateStore((state) => state.markThreadUnread);
   const setProjectExpanded = useUiStateStore((state) => state.setProjectExpanded);
@@ -3294,6 +3364,12 @@ export default function LegacySidebar() {
   const updateSettings = useUpdateClientSettings();
   const handleNewThread = useNewThreadHandler();
   const { archiveThread, deleteThread } = useThreadActions();
+  const queuePendingFileDrop = useSidebarPendingFileDropStore(
+    (state) => state.queuePendingFileDrop,
+  );
+  const clearPendingFileDrop = useSidebarPendingFileDropStore(
+    (state) => state.clearPendingFileDrop,
+  );
   const { isMobile, setOpenMobile } = useSidebar();
   const routeTarget = useParams({
     strict: false,

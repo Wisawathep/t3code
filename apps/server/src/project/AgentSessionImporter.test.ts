@@ -26,20 +26,21 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { makeTestProviderAdapterHarness } from "../../integration/TestProviderAdapter.integration.ts";
 import { ServerConfig } from "../config.ts";
-import { CheckpointNavigationService } from "../checkpointing/CheckpointNavigationService.ts";
-import { CheckpointRepositoryIdentityResolver } from "../checkpointing/CheckpointRepositoryIdentity.ts";
-import { WorkspaceMutationCoordinatorLive } from "../checkpointing/WorkspaceMutationCoordinator.ts";
 import { GitWorkflowService } from "../git/GitWorkflowService.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
-import { CheckpointNavigationRepository } from "../persistence/Services/CheckpointNavigation.ts";
 import { OrchestrationEngineLive } from "../orchestration/Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "../orchestration/Layers/ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../orchestration/Layers/ProjectionSnapshotQuery.ts";
 import { ProviderCommandReactorLive } from "../orchestration/Layers/ProviderCommandReactor.ts";
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
+import { CheckpointNavigationService } from "../checkpointing/CheckpointNavigationService.ts";
+import { CheckpointNavigationRepository } from "../persistence/Services/CheckpointNavigation.ts";
+import { CheckpointRepositoryIdentityResolver } from "../checkpointing/CheckpointRepositoryIdentity.ts";
+import { WorkspaceMutationCoordinatorLive } from "../checkpointing/WorkspaceMutationCoordinator.ts";
+import { VcsDriverRegistry } from "../vcs/VcsDriverRegistry.ts";
 import * as ThreadBackgroundLiveness from "../orchestration/ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../orchestration/ThreadPlanProgress.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
@@ -60,7 +61,6 @@ import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistr
 import { ServerSettingsService } from "../serverSettings.ts";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
 import { TextGeneration } from "../textGeneration/TextGeneration.ts";
-import { VcsDriverRegistry } from "../vcs/VcsDriverRegistry.ts";
 import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
 import { importRecentAgentThreads } from "./AgentSessionImporter.ts";
@@ -129,6 +129,7 @@ const makeProjectedThread = (input: {
     modelSelection: { instanceId: sourceThread.providerInstanceId, model: "default" },
     runtimeMode: "full-access",
     interactionMode: "default",
+    pullRequests: [],
     branch: null,
     worktreePath: null,
     latestTurn: null,
@@ -936,7 +937,7 @@ it.layer(integrationLayer)("AgentSessionImporter integration", (it) => {
           Layer.provide(Layer.mock(VcsStatusBroadcaster)({})),
           Layer.provide(Layer.mock(TextGeneration)({})),
           Layer.provide(ServerSettingsService.layerTest()),
-          Layer.provideMerge(
+          Layer.provide(
             Layer.mock(CheckpointNavigationService)({
               abandonForwardHistory: () =>
                 Effect.succeed({
@@ -947,29 +948,25 @@ it.layer(integrationLayer)("AgentSessionImporter integration", (it) => {
                 }),
             }),
           ),
-          Layer.provideMerge(
+          Layer.provide(
             Layer.mock(CheckpointNavigationRepository)({
               getUnresolvedByThread: () => Effect.succeed(Option.none()),
             }),
           ),
-          Layer.provideMerge(
-            Layer.succeed(CheckpointRepositoryIdentityResolver, {
+          Layer.provide(
+            Layer.mock(CheckpointRepositoryIdentityResolver)({
               resolve: () =>
                 Effect.succeed({
-                  repositoryKey: "repository-key",
-                  worktreeKey: "worktree-key",
-                  commonDir: "/tmp/common",
-                  worktreeRoot: "/tmp/worktree",
+                  repositoryKey: "test-repository",
+                  worktreeKey: "test-worktree",
+                  commonDir: workspaceRoot,
+                  worktreeRoot: workspaceRoot,
                   objectFormat: "sha1" as const,
                 }),
             }),
           ),
-          Layer.provideMerge(
-            Layer.mock(VcsDriverRegistry)({
-              detect: () => Effect.succeed({ kind: "git" } as never),
-            }),
-          ),
-          Layer.provideMerge(WorkspaceMutationCoordinatorLive),
+          Layer.provide(WorkspaceMutationCoordinatorLive),
+          Layer.provide(Layer.mock(VcsDriverRegistry)({ detect: () => Effect.succeed(null) })),
         );
 
         yield* engine.dispatch({

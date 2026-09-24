@@ -87,6 +87,35 @@ describe("provider API gateway model settings", () => {
   });
 });
 
+describe("ServerSettings default permissions", () => {
+  it("keeps full access for settings saved before a default was configured", () => {
+    expect(decodeServerSettings({}).defaultRuntimeMode).toBe("full-access");
+    expect(DEFAULT_SERVER_SETTINGS.defaultRuntimeMode).toBe("full-access");
+  });
+
+  it.each(["approval-required", "auto-accept-edits", "auto", "full-access"])(
+    "round-trips %s as an environment default and project override",
+    (defaultRuntimeMode) => {
+      const input = {
+        defaultRuntimeMode,
+        projectSettingsOverrides: { project: { defaultRuntimeMode } },
+      };
+      expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
+      expect(decodeServerSettingsPatch(input)).toEqual(input);
+    },
+  );
+
+  it("rejects unsupported permission defaults", () => {
+    expect(() => decodeServerSettings({ defaultRuntimeMode: "unsupported" })).toThrow();
+    expect(() => decodeServerSettingsPatch({ defaultRuntimeMode: "unsupported" })).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({
+        projectSettingsOverrides: { project: { defaultRuntimeMode: "unsupported" } },
+      }),
+    ).toThrow();
+  });
+});
+
 describe("ServerSettings usage price overrides", () => {
   const prices = { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 };
 
@@ -199,6 +228,63 @@ describe("ClaudeSettings auto-compaction", () => {
     expect(
       decodeServerSettingsPatch({ providers: { claudeAgent: { autoCompactWindow: "300000" } } }),
     ).toBeDefined();
+  });
+});
+
+describe("ClientSettings notifications", () => {
+  it("requires opt-in when existing settings omit notification preferences", () => {
+    expect(decodeClientSettings({}).notificationMode).toBe("off");
+    expect(decodeClientSettingsPatch({})).not.toHaveProperty("notificationMode");
+  });
+
+  it.each(["off", "notifications", "sound", "notifications-and-sound"])(
+    "round-trips the %s mode",
+    (notificationMode) => {
+      const settings = decodeClientSettings({ notificationMode });
+      expect(encodeClientSettings(settings).notificationMode).toBe(notificationMode);
+      expect(decodeClientSettingsPatch({ notificationMode }).notificationMode).toBe(
+        notificationMode,
+      );
+    },
+  );
+
+  it.each(["always", true, null])(
+    "rejects unsupported notification mode %s",
+    (notificationMode) => {
+      expect(() => decodeClientSettings({ notificationMode })).toThrow();
+      expect(() => decodeClientSettingsPatch({ notificationMode })).toThrow();
+    },
+  );
+});
+
+describe("ClientSettings default diff file state", () => {
+  it("keeps files expanded when existing settings omit the preference", () => {
+    expect(decodeClientSettings({}).diffFilesCollapsed).toBe(false);
+  });
+
+  it.each([true, false])("preserves a saved collapsed preference of %s", (diffFilesCollapsed) => {
+    const settings = decodeClientSettings({ diffFilesCollapsed });
+    expect(encodeClientSettings(settings).diffFilesCollapsed).toBe(diffFilesCollapsed);
+    expect(decodeClientSettingsPatch({ diffFilesCollapsed }).diffFilesCollapsed).toBe(
+      diffFilesCollapsed,
+    );
+  });
+});
+
+describe("ClientSettings diff colors", () => {
+  it("keeps red and green for existing settings without a saved palette", () => {
+    expect(decodeClientSettings({}).diffColorScheme).toBe("red-green");
+  });
+
+  it.each(["red-green", "blue-orange"])("round-trips the %s palette", (diffColorScheme) => {
+    const settings = decodeClientSettings({ diffColorScheme });
+    expect(encodeClientSettings(settings).diffColorScheme).toBe(diffColorScheme);
+    expect(decodeClientSettingsPatch({ diffColorScheme }).diffColorScheme).toBe(diffColorScheme);
+  });
+
+  it("rejects unsupported palettes", () => {
+    expect(() => decodeClientSettings({ diffColorScheme: "purple-yellow" })).toThrow();
+    expect(() => decodeClientSettingsPatch({ diffColorScheme: "purple-yellow" })).toThrow();
   });
 });
 
@@ -324,6 +410,53 @@ describe("ClientSettings proactive panels", () => {
     expect(decodeClientSettingsPatch({ proactivePanelsEnabled: true }).proactivePanelsEnabled).toBe(
       true,
     );
+  });
+});
+
+describe("ClientSettings prompt suggestions", () => {
+  it("defaults to disabled and keeps the preference in the client settings", () => {
+    expect(decodeClientSettings({}).enablePromptSuggestion).toBe(false);
+    expect(decodeClientSettings({}).promptSuggestionInstructions).toBe("");
+
+    const settings = decodeClientSettings({
+      enablePromptSuggestion: true,
+      promptSuggestionInstructions: " Suggest a focused next step. ",
+    });
+    expect(settings.enablePromptSuggestion).toBe(true);
+    expect(settings.promptSuggestionInstructions).toBe("Suggest a focused next step.");
+    expect(encodeClientSettings(settings)).toMatchObject({
+      enablePromptSuggestion: true,
+      promptSuggestionInstructions: "Suggest a focused next step.",
+    });
+  });
+
+  it("accepts prompt suggestion updates at the client patch boundary", () => {
+    expect(
+      decodeClientSettingsPatch({
+        enablePromptSuggestion: true,
+        promptSuggestionInstructions: " Suggest one idea. ",
+      }),
+    ).toEqual({
+      enablePromptSuggestion: true,
+      promptSuggestionInstructions: "Suggest one idea.",
+    });
+  });
+});
+
+describe("ServerSettings prompt suggestions", () => {
+  it("ignores the retired server-wide prompt suggestion fields", () => {
+    const decoded = decodeServerSettings({
+      enablePromptSuggestion: true,
+      promptSuggestionInstructions: "This belongs to a client.",
+    });
+    expect(decoded).not.toHaveProperty("enablePromptSuggestion");
+    expect(decoded).not.toHaveProperty("promptSuggestionInstructions");
+    expect(
+      decodeServerSettingsPatch({
+        enablePromptSuggestion: true,
+        promptSuggestionInstructions: "This belongs to a client.",
+      }),
+    ).toEqual({});
   });
 });
 
@@ -808,4 +941,17 @@ describe("ServerSettings environment icon", () => {
     const linuxSettings = decodeServerSettings({ environmentIcon: "linux" });
     expect(encodeServerSettings(linuxSettings).environmentIcon).toBe("linux");
   });
+});
+
+const decodeDeviceHostSettings = Schema.decodeSync(ServerSettings);
+
+it("validates remote device hosts and rejects ambiguous host ids", () => {
+  const host = { id: "mini", label: "Mac mini", target: "user@mini", port: 2222 };
+  expect(decodeDeviceHostSettings({ deviceHosts: [host] }).deviceHosts).toEqual([host]);
+  expect(() => decodeDeviceHostSettings({ deviceHosts: [host, host] })).toThrow();
+  expect(() => decodeDeviceHostSettings({ deviceHosts: [{ ...host, id: "local" }] })).toThrow();
+  expect(() =>
+    decodeDeviceHostSettings({ deviceHosts: [{ ...host, target: "-oProxyCommand=bad" }] }),
+  ).toThrow();
+  expect(() => decodeDeviceHostSettings({ deviceHosts: [{ ...host, port: 0 }] })).toThrow();
 });
